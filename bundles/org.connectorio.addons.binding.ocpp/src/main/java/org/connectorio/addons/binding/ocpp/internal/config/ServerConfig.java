@@ -28,6 +28,8 @@ public class ServerConfig implements Configuration {
   public String initialOcularEcoMode;
   public int pingInterval = 60;
 
+  public boolean disableRemoteTxAuthorization = true;
+
   public List<String> chargers;
   public List<String> tags;
 }

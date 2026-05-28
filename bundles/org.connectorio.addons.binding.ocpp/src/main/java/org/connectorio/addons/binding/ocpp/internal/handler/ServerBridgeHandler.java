@@ -41,6 +41,7 @@ import org.connectorio.addons.binding.ocpp.internal.server.CompositeRequestListe
 import org.connectorio.addons.binding.ocpp.internal.server.OcppServer;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.AuthorizationIdTagAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.BootRegistrationAdapter;
+import org.connectorio.addons.binding.ocpp.internal.server.adapter.RemoteAuthorizationConfigAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.RequestListenerAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.custom.OcularSolarEcoMode;
 import org.openhab.core.net.NetworkAddressService;
@@ -103,6 +104,9 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
       new OcularSolarEcoMode(config.initialOcularEcoMode),
       config.pingInterval
     );
+    if (config.disableRemoteTxAuthorization) {
+      eventHandlers.addFirst(new RemoteAuthorizationConfigAdapter(bootAdapter, server));
+    }
     server.activate();
     updateStatus(ThingStatus.ONLINE);
   }
