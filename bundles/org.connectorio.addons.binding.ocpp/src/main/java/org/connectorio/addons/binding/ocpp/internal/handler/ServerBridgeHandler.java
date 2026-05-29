@@ -42,6 +42,7 @@ import org.connectorio.addons.binding.ocpp.internal.server.OcppServer;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.AuthorizationIdTagAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.BootRegistrationAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.RequestListenerAdapter;
+import org.connectorio.addons.binding.ocpp.internal.server.adapter.VendorConfigAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.custom.OcularSolarEcoMode;
 import org.openhab.core.net.NetworkAddressService;
 import org.openhab.core.thing.Bridge;
@@ -103,6 +104,7 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
       new OcularSolarEcoMode(config.initialOcularEcoMode),
       config.pingInterval
     );
+    eventHandlers.addFirst(new VendorConfigAdapter(bootAdapter, server, VendorConfigAdapter.parse(config.vendorConfig)));
     server.activate();
     updateStatus(ThingStatus.ONLINE);
   }
