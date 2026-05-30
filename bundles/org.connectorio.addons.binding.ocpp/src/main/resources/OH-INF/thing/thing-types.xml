@@ -128,6 +128,10 @@
         <label>Charging</label>
         <description>Remote start/stop charging control. Send ON to trigger RemoteStartTransaction and OFF to trigger RemoteStopTransaction.</description>
       </channel>
+      <channel id="cableConnected" typeId="switch">
+        <label>Cable Connected</label>
+        <description>Read-only. ON while an EV is plugged in (connector status Preparing/Charging/SuspendedEV/SuspendedEVSE/Finishing), OFF otherwise. Derived from StatusNotification since OCPP 1.6 has no dedicated plug-presence message.</description>
+      </channel>
       <channel id="timestampStart" typeId="dateTime">
         <label>Start timestamp</label>
         <description>Start timestamp of most recent transaction.</description>
