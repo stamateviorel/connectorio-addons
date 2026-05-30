@@ -28,10 +28,12 @@ public class ChargeLimitCommandHandler {
             logger.warn("Unsupported command type for chargeLimit: {}", command.getClass());
             return;
         }
-        sendChargingProfile(limit, context.getOcppSender(), context.getChargerSerialNumber());
+        sendChargingProfile(limit, context);
     }
 
-    private void sendChargingProfile(double limit, OcppSender ocppSender, String chargerSerialNumber) {
+    private void sendChargingProfile(double limit, ConnectorCommandContext context) {
+        OcppSender ocppSender = context.getOcppSender();
+        String chargerSerialNumber = context.getChargerSerialNumber();
         if (ocppSender == null || chargerSerialNumber == null) {
             logger.warn("OcppSender or charger serial not set. Cannot send charging profile.");
             return;
@@ -49,12 +51,25 @@ public class ChargeLimitCommandHandler {
         ChargingProfile profile = new ChargingProfile();
         profile.setChargingProfileId(1);
         profile.setStackLevel(0);
-        profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxDefaultProfile);
         profile.setChargingProfileKind(ChargingProfileKindType.Relative);
         profile.setChargingSchedule(schedule);
 
+        // A limit applied while a transaction is running must target that transaction with a
+        // TxProfile carrying its transactionId. Per OCPP 1.6 Smart Charging a TxDefaultProfile
+        // sets the default for *future* transactions, so spec-strict charge points may defer a
+        // mid-session TxDefaultProfile to the next transaction instead of acting on the running
+        // one. Fall back to TxDefaultProfile only when no transaction is active, which seeds the
+        // limit for the next session.
+        Integer transactionId = context.getCurrentTransactionId();
+        if (transactionId != null) {
+            profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxProfile);
+            profile.setTransactionId(transactionId);
+        } else {
+            profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxDefaultProfile);
+        }
+
         SetChargingProfileRequest setProfileRequest = new SetChargingProfileRequest(1, profile);
-        
+
         ocppSender.send(chargerRef, setProfileRequest).whenComplete((confirmation, throwable) -> {
             if (throwable != null) {
                 logger.warn("Failed to send SetChargingProfile with limit {}", limit, throwable);
