@@ -188,6 +188,14 @@
         <label>Cable Connected</label>
         <description>Read-only. ON while an EV is plugged in (connector status Preparing/Charging/SuspendedEV/SuspendedEVSE/Finishing), OFF otherwise. Derived from StatusNotification since OCPP 1.6 has no dedicated plug-presence message.</description>
       </channel>
+      <channel id="reset" typeId="switch">
+        <label>Reset</label>
+        <description>Momentary. Send ON to issue a soft Reset to the charge point; the channel returns to OFF once the request settles.</description>
+      </channel>
+      <channel id="lock" typeId="switch">
+        <label>Unlock Connector</label>
+        <description>Momentary. Send ON to issue UnlockConnector for this connector (releases the cable latch / terminates a stuck transaction); the channel returns to OFF once the request settles.</description>
+      </channel>
       <channel id="timestampStart" typeId="dateTime">
         <label>Start timestamp</label>
         <description>Start timestamp of most recent transaction.</description>

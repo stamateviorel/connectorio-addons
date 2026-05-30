@@ -14,6 +14,8 @@ import eu.chargetime.ocpp.model.core.StartTransactionConfirmation;
 import eu.chargetime.ocpp.model.core.StartTransactionRequest;
 import eu.chargetime.ocpp.model.core.StatusNotificationConfirmation;
 import eu.chargetime.ocpp.model.core.StatusNotificationRequest;
+import eu.chargetime.ocpp.model.core.ResetRequest;
+import eu.chargetime.ocpp.model.core.ResetType;
 import eu.chargetime.ocpp.model.core.StopTransactionConfirmation;
 import eu.chargetime.ocpp.model.core.StopTransactionRequest;
 import eu.chargetime.ocpp.model.core.UnlockConnectorRequest;
@@ -187,7 +189,47 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
           chargeLimitHandler.resume(this);
         }
       }
+    } else if (OcppBindingConstants.RESET.getAsString().equals(channelId)) {
+      if (command == OnOffType.ON) {
+        sendReset();
+      }
+    } else if (OcppBindingConstants.LOCK.getAsString().equals(channelId)) {
+      if (command == OnOffType.ON) {
+        sendUnlock();
+      }
     }
+  }
+
+  private void sendReset() {
+    if (ocppSender == null || chargerSerialNumber == null) {
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new ResetRequest(ResetType.Soft)).whenComplete((confirmation, ex) -> {
+      if (ex != null) {
+        logger.warn("Reset(Soft) for {} failed: {}", getThing().getUID(), ex.getMessage());
+      } else {
+        logger.info("Reset(Soft) for {}: {}", getThing().getUID(), confirmation);
+      }
+      getCallback().stateUpdated(
+          new ChannelUID(getThing().getUID(), OcppBindingConstants.RESET.getAsString()), OnOffType.OFF);
+    });
+  }
+
+  private void sendUnlock() {
+    if (ocppSender == null || chargerSerialNumber == null || connectorId == null) {
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new UnlockConnectorRequest(connectorId)).whenComplete((confirmation, ex) -> {
+      if (ex != null) {
+        logger.warn("UnlockConnector for {} failed: {}", getThing().getUID(), ex.getMessage());
+      } else {
+        logger.info("UnlockConnector for {}: {}", getThing().getUID(), confirmation);
+      }
+      getCallback().stateUpdated(
+          new ChannelUID(getThing().getUID(), OcppBindingConstants.LOCK.getAsString()), OnOffType.OFF);
+    });
   }
 
   @Override
