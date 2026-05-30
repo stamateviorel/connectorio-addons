@@ -1,8 +1,12 @@
 package org.connectorio.addons.binding.ocpp.internal.handler;
 
 import eu.chargetime.ocpp.model.core.AuthorizationStatus;
+import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
 import eu.chargetime.ocpp.model.core.ChargePointStatus;
+import eu.chargetime.ocpp.model.core.GetConfigurationConfirmation;
+import eu.chargetime.ocpp.model.core.GetConfigurationRequest;
 import eu.chargetime.ocpp.model.core.IdTagInfo;
+import eu.chargetime.ocpp.model.core.KeyValueType;
 import eu.chargetime.ocpp.model.core.MeterValue;
 import eu.chargetime.ocpp.model.core.MeterValuesConfirmation;
 import eu.chargetime.ocpp.model.core.MeterValuesRequest;
@@ -41,6 +45,7 @@ import org.openhab.core.thing.binding.ThingHandler;
 import org.openhab.core.thing.binding.ThingHandlerCallback;
 import org.openhab.core.library.types.OnOffType;
 import org.openhab.core.types.Command;
+import org.openhab.core.types.RefreshType;
 import org.openhab.core.types.State;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +62,7 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   private Integer currentTransactionId;
   private String remoteStartTag;
   private Integer connectorId;
+  private String hardwareMaxCurrentKey;
 
   private final ChargeLimitCommandHandler chargeLimitHandler;
   private final ChargingCommandHandler chargingHandler;
@@ -110,6 +116,7 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
         remoteStartTag = ConnectorConfig.DEFAULT_REMOTE_START_TAG;
       }
       connectorId = config.get().connectorId;
+      hardwareMaxCurrentKey = config.get().hardwareMaxCurrentKey;
     } else {
       remoteStartTag = ConnectorConfig.DEFAULT_REMOTE_START_TAG;
     }
@@ -123,7 +130,68 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       chargeLimitHandler.handle(command, this);
     } else if (OcppBindingConstants.CHARGING.getAsString().equals(channelId)) {
       chargingHandler.handle(command, this);
+    } else if (OcppBindingConstants.HARDWARE_MAX_CURRENT.getAsString().equals(channelId)) {
+      if (command instanceof RefreshType) {
+        readHardwareMaxCurrent();
+      } else if (command instanceof DecimalType) {
+        writeHardwareMaxCurrent(((DecimalType) command).intValue());
+      } else if (command instanceof QuantityType) {
+        writeHardwareMaxCurrent(((QuantityType<?>) command).intValue());
+      }
     }
+  }
+
+  private void writeHardwareMaxCurrent(int amps) {
+    if (ocppSender == null || chargerSerialNumber == null) {
+      return;
+    }
+    if (hardwareMaxCurrentKey == null || hardwareMaxCurrentKey.trim().isEmpty()) {
+      logger.warn("hardwareMaxCurrentKey not configured on {}; cannot write hardware max current",
+          getThing().getUID());
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new ChangeConfigurationRequest(hardwareMaxCurrentKey, Integer.toString(amps)))
+        .whenComplete((confirmation, ex) -> {
+          if (ex != null) {
+            logger.warn("ChangeConfiguration[{}={}] for {} failed: {}", hardwareMaxCurrentKey, amps,
+                getThing().getUID(), ex.getMessage());
+          } else {
+            logger.debug("ChangeConfiguration[{}={}] for {}: {}", hardwareMaxCurrentKey, amps,
+                getThing().getUID(), confirmation);
+          }
+        });
+  }
+
+  private void readHardwareMaxCurrent() {
+    if (ocppSender == null || chargerSerialNumber == null
+        || hardwareMaxCurrentKey == null || hardwareMaxCurrentKey.trim().isEmpty()) {
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    GetConfigurationRequest request = new GetConfigurationRequest();
+    request.setKey(new String[]{ hardwareMaxCurrentKey });
+    ocppSender.<GetConfigurationConfirmation>send(reference, request).whenComplete((confirmation, ex) -> {
+      if (ex != null || confirmation == null || confirmation.getConfigurationKey() == null) {
+        if (ex != null) {
+          logger.warn("GetConfiguration[{}] for {} failed: {}", hardwareMaxCurrentKey, getThing().getUID(),
+              ex.getMessage());
+        }
+        return;
+      }
+      for (KeyValueType kv : confirmation.getConfigurationKey()) {
+        if (hardwareMaxCurrentKey.equals(kv.getKey()) && kv.getValue() != null) {
+          try {
+            double amps = Double.parseDouble(kv.getValue().trim());
+            getCallback().stateUpdated(
+                new ChannelUID(getThing().getUID(), OcppBindingConstants.HARDWARE_MAX_CURRENT.getAsString()),
+                new QuantityType<>(amps, Units.AMPERE));
+          } catch (NumberFormatException e) {
+            logger.debug("Could not parse {}={} as a current value", hardwareMaxCurrentKey, kv.getValue());
+          }
+        }
+      }
+    });
   }
 
   @Override

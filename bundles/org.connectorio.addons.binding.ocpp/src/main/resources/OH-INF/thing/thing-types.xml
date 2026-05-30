@@ -128,6 +128,10 @@
         <label>Charging</label>
         <description>Remote start/stop charging control. Send ON to trigger RemoteStartTransaction and OFF to trigger RemoteStopTransaction.</description>
       </channel>
+      <channel id="hardwareMaxCurrent" typeId="current">
+        <label>Hardware Max Current</label>
+        <description>Read/write the charger's persisted hardware current ceiling via a vendor-specific configuration key (set hardwareMaxCurrentKey on the connector; e.g. Wallbox uses chargingALimitConn1). Commands are written with ChangeConfiguration; REFRESH reads back with GetConfiguration. Inactive if no key is configured.</description>
+      </channel>
       <channel id="timestampStart" typeId="dateTime">
         <label>Start timestamp</label>
         <description>Start timestamp of most recent transaction.</description>
@@ -251,6 +255,11 @@
         <label>Remote Start Tag</label>
         <description>Tag to use for remote start transactions. Defaults to "openhab" if not specified.</description>
         <default>openhab</default>
+      </parameter>
+      <parameter name="hardwareMaxCurrentKey" type="text" required="false">
+        <label>Hardware Max Current Key</label>
+        <description>Vendor-specific OCPP configuration key backing the hardwareMaxCurrent channel (read with GetConfiguration, written with ChangeConfiguration). Wallbox uses chargingALimitConn1. Leave empty to disable the channel.</description>
+        <advanced>true</advanced>
       </parameter>
     </config-description>
 

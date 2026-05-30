@@ -47,6 +47,7 @@ public interface OcppBindingConstants extends BaseBindingConstants {
   ChannelRef CURRENT_OFFERED = new ChannelRef("currentOffered");
   ChannelRef CHARGE_LIMIT = new ChannelRef("chargeLimit");
   ChannelRef CHARGING = new ChannelRef("charging");
+  ChannelRef HARDWARE_MAX_CURRENT = new ChannelRef("hardwareMaxCurrent");
   ChannelRef ENERGY_ACTIVE_EXPORT = new ChannelRef("energyActiveExport");
   ChannelRef ENERGY_ACTIVE_IMPORT = new ChannelRef("energyActiveImport");
   ChannelRef ENERGY_REACTIVE_EXPORT = new ChannelRef("energyReactiveExport");
