@@ -9,6 +9,8 @@ import static org.mockito.Mockito.when;
 import eu.chargetime.ocpp.model.Request;
 import eu.chargetime.ocpp.model.core.AuthorizationStatus;
 import eu.chargetime.ocpp.model.core.IdTagInfo;
+import eu.chargetime.ocpp.model.core.MeterValuesConfirmation;
+import eu.chargetime.ocpp.model.core.MeterValuesRequest;
 import eu.chargetime.ocpp.model.core.StartTransactionConfirmation;
 import eu.chargetime.ocpp.model.core.StartTransactionRequest;
 import eu.chargetime.ocpp.model.core.StopTransactionRequest;
@@ -36,6 +38,20 @@ class ChargerConnectorAdapterTest {
   @BeforeEach
   void setUp() {
     adapter = new ChargerConnectorAdapter(listener);
+  }
+
+  @Test
+  void chargerLevelMeterValuesIsAckedNotNull() {
+    // connectorId 0 (charger-level, e.g. idle clock-aligned MeterValues) has no connector Thing.
+    adapter.addConnector(1, connector1);
+    MeterValuesRequest request = org.mockito.Mockito.mock(MeterValuesRequest.class);
+    when(request.getConnectorId()).thenReturn(0);
+
+    MeterValuesConfirmation conf = adapter.handleMeterValues(request);
+
+    // must ACK (non-null) so the OCPP layer does not answer the charge point NotSupported
+    assertThat(conf).isNotNull();
+    verify(connector1, never()).handleMeterValues(any(MeterValuesRequest.class));
   }
 
   @Test
