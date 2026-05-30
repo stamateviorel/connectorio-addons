@@ -23,6 +23,9 @@ public class ChargeLimitCommandHandler {
     // One coalescer per handler instance — handlers are created per connector.
     private SetChargingProfileCoalescer coalescer;
 
+    // Last non-zero limit requested, restored on resume (pause = limit 0).
+    private double lastRequestedLimit = -1;
+
     public void handle(Command command, ConnectorCommandContext context) {
         double limit;
         if (command instanceof DecimalType) {
@@ -38,7 +41,34 @@ public class ChargeLimitCommandHandler {
             logger.warn("OcppSender, charger serial or connector id not set. Cannot send charging profile.");
             return;
         }
+        if (limit > 0) {
+            lastRequestedLimit = limit;
+        }
         coalescer(context).submit((int) Math.round(limit));
+    }
+
+    /** Pause charging by applying a 0 A limit (OCPP has no dedicated pause command). */
+    public void pause(ConnectorCommandContext context) {
+        if (context.getOcppSender() == null || context.getChargerSerialNumber() == null
+                || context.getConnectorId() == null) {
+            logger.warn("OcppSender, charger serial or connector id not set. Cannot pause.");
+            return;
+        }
+        coalescer(context).submit(0);
+    }
+
+    /** Resume charging by restoring the last non-zero limit. */
+    public void resume(ConnectorCommandContext context) {
+        if (context.getOcppSender() == null || context.getChargerSerialNumber() == null
+                || context.getConnectorId() == null) {
+            logger.warn("OcppSender, charger serial or connector id not set. Cannot resume.");
+            return;
+        }
+        if (lastRequestedLimit <= 0) {
+            logger.info("No prior charge limit to resume to; awaiting next chargeLimit command.");
+            return;
+        }
+        coalescer(context).submit((int) Math.round(lastRequestedLimit));
     }
 
     private synchronized SetChargingProfileCoalescer coalescer(ConnectorCommandContext context) {
