@@ -7,8 +7,10 @@ import eu.chargetime.ocpp.model.core.ChargingRateUnitType;
 import eu.chargetime.ocpp.model.core.ChargingSchedule;
 import eu.chargetime.ocpp.model.core.ChargingSchedulePeriod;
 import eu.chargetime.ocpp.model.smartcharging.SetChargingProfileRequest;
-import org.connectorio.addons.binding.ocpp.internal.OcppSender;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
+import org.connectorio.addons.binding.ocpp.internal.server.SetChargingProfileCoalescer;
 import org.openhab.core.library.types.DecimalType;
 import org.openhab.core.library.types.QuantityType;
 import org.openhab.core.types.Command;
@@ -17,6 +19,9 @@ import org.slf4j.LoggerFactory;
 
 public class ChargeLimitCommandHandler {
     private final Logger logger = LoggerFactory.getLogger(ChargeLimitCommandHandler.class);
+
+    // One coalescer per handler instance — handlers are created per connector.
+    private SetChargingProfileCoalescer coalescer;
 
     public void handle(Command command, ConnectorCommandContext context) {
         double limit;
@@ -28,19 +33,29 @@ public class ChargeLimitCommandHandler {
             logger.warn("Unsupported command type for chargeLimit: {}", command.getClass());
             return;
         }
-        sendChargingProfile(limit, context.getOcppSender(), context.getChargerSerialNumber(), context.getConnectorId());
-    }
-
-    private void sendChargingProfile(double limit, OcppSender ocppSender, String chargerSerialNumber, Integer connectorId) {
-        if (ocppSender == null || chargerSerialNumber == null || connectorId == null) {
+        if (context.getOcppSender() == null || context.getChargerSerialNumber() == null
+                || context.getConnectorId() == null) {
             logger.warn("OcppSender, charger serial or connector id not set. Cannot send charging profile.");
             return;
         }
+        coalescer(context).submit((int) Math.round(limit));
+    }
 
-        ChargerReference chargerRef = new ChargerReference(chargerSerialNumber);
+    private synchronized SetChargingProfileCoalescer coalescer(ConnectorCommandContext context) {
+        if (coalescer == null) {
+            coalescer = new SetChargingProfileCoalescer(
+                context.getProfileMinIntervalMs(),
+                System::currentTimeMillis,
+                wire -> sendChargingProfile(wire, context),
+                (task, delayMs) -> context.getScheduler().schedule(task, delayMs, TimeUnit.MILLISECONDS));
+        }
+        return coalescer;
+    }
 
-        // Create charging profile with the specified limit
-        ChargingSchedulePeriod period = new ChargingSchedulePeriod(0, limit);
+    private CompletionStage<?> sendChargingProfile(int limit, ConnectorCommandContext context) {
+        ChargerReference chargerRef = new ChargerReference(context.getChargerSerialNumber());
+
+        ChargingSchedulePeriod period = new ChargingSchedulePeriod(0, (double) limit);
         ChargingSchedule schedule = new ChargingSchedule(
             ChargingRateUnitType.A,
             new ChargingSchedulePeriod[]{ period }
@@ -53,9 +68,9 @@ public class ChargeLimitCommandHandler {
         profile.setChargingProfileKind(ChargingProfileKindType.Relative);
         profile.setChargingSchedule(schedule);
 
-        SetChargingProfileRequest setProfileRequest = new SetChargingProfileRequest(connectorId, profile);
-        
-        ocppSender.send(chargerRef, setProfileRequest).whenComplete((confirmation, throwable) -> {
+        SetChargingProfileRequest setProfileRequest = new SetChargingProfileRequest(context.getConnectorId(), profile);
+
+        return context.getOcppSender().send(chargerRef, setProfileRequest).whenComplete((confirmation, throwable) -> {
             if (throwable != null) {
                 logger.warn("Failed to send SetChargingProfile with limit {}", limit, throwable);
             } else {

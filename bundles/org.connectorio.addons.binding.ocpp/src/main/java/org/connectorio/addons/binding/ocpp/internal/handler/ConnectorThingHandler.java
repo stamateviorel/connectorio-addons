@@ -59,6 +59,7 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   private static final long PHANTOM_WINDOW_MS = 60_000L;
   private static final int PHANTOM_CYCLE_THRESHOLD = 2;
   private static final long PHANTOM_RESET_DELAY_MS = 2_000L;
+  private static final long DEFAULT_PROFILE_MIN_INTERVAL_MS = 500L;
 
   private final AtomicInteger transactionId = new AtomicInteger();
   private final Logger logger = LoggerFactory.getLogger(ConnectorThingHandler.class);
@@ -113,6 +114,27 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   @Override
   public Integer getConnectorId() {
     return connectorId;
+  }
+
+  @Override
+  public java.util.concurrent.ScheduledExecutorService getScheduler() {
+    return scheduler;
+  }
+
+  @Override
+  public long getProfileMinIntervalMs() {
+    Object value = getThing().getConfiguration().get("profileMinIntervalMs");
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    if (value instanceof String) {
+      try {
+        return Long.parseLong(((String) value).trim());
+      } catch (NumberFormatException e) {
+        // fall through to default
+      }
+    }
+    return DEFAULT_PROFILE_MIN_INTERVAL_MS;
   }
 
   @Override
