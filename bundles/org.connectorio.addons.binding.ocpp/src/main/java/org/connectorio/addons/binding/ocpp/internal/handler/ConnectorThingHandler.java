@@ -49,6 +49,8 @@ import tech.units.indriya.quantity.Quantities;
 public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeHandler, ChargerConfig> implements
   StatusNotificationHandler, TransactionHandler, MeterValuesHandler, ConnectorCommandContext {
 
+  private static final long DEFAULT_PROFILE_MIN_INTERVAL_MS = 500L;
+
   private final AtomicInteger transactionId = new AtomicInteger();
   private final Logger logger = LoggerFactory.getLogger(ConnectorThingHandler.class);
   
@@ -93,6 +95,27 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   @Override
   public Integer getCurrentTransactionId() {
     return currentTransactionId;
+  }
+
+  @Override
+  public java.util.concurrent.ScheduledExecutorService getScheduler() {
+    return scheduler;
+  }
+
+  @Override
+  public long getProfileMinIntervalMs() {
+    Object value = getThing().getConfiguration().get("profileMinIntervalMs");
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    if (value instanceof String) {
+      try {
+        return Long.parseLong(((String) value).trim());
+      } catch (NumberFormatException e) {
+        // fall through to default
+      }
+    }
+    return DEFAULT_PROFILE_MIN_INTERVAL_MS;
   }
 
   @Override
