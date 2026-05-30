@@ -116,11 +116,12 @@ class ChargeLimitCommandHandlerTest {
 
   @Test
   void shouldUseTxDefaultProfileWhenNoTransaction() {
-    // given no active transaction (getCurrentTransactionId defaults to null)
+    // given no active transaction (the handler reads a null transaction id when idle)
     stubCoalescer();
     when(context.getOcppSender()).thenReturn(sender);
     when(context.getChargerSerialNumber()).thenReturn("charger-serial");
     when(context.getConnectorId()).thenReturn(1);
+    when(context.getCurrentTransactionId()).thenReturn(null);
     when(sender.send(any(ChargerReference.class), any(Request.class)))
       .thenReturn(CompletableFuture.completedFuture(null));
 
