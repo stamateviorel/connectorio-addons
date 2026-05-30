@@ -1,6 +1,8 @@
 package org.connectorio.addons.binding.ocpp.internal.handler;
 
 import eu.chargetime.ocpp.model.core.AuthorizationStatus;
+import eu.chargetime.ocpp.model.core.AvailabilityType;
+import eu.chargetime.ocpp.model.core.ChangeAvailabilityRequest;
 import eu.chargetime.ocpp.model.core.ChargePointStatus;
 import eu.chargetime.ocpp.model.core.IdTagInfo;
 import eu.chargetime.ocpp.model.core.MeterValue;
@@ -16,12 +18,14 @@ import eu.chargetime.ocpp.model.core.StopTransactionRequest;
 import eu.chargetime.ocpp.model.core.ValueFormat;
 import java.time.ZonedDateTime;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import javax.measure.Quantity;
 import org.connectorio.addons.binding.handler.GenericThingHandlerBase;
 import org.connectorio.addons.binding.ocpp.OcppBindingConstants;
 import org.connectorio.addons.binding.ocpp.internal.config.ConnectorConfig;
 import org.connectorio.addons.binding.ocpp.internal.server.OcppMeasurementMapping;
+import org.connectorio.addons.binding.ocpp.internal.server.PhantomCycleDetector;
 import org.connectorio.addons.binding.ocpp.internal.server.listener.MeterValuesHandler;
 import org.connectorio.addons.binding.ocpp.internal.server.listener.StatusNotificationHandler;
 import org.connectorio.addons.binding.ocpp.internal.server.listener.TransactionHandler;
@@ -49,8 +53,18 @@ import tech.units.indriya.quantity.Quantities;
 public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeHandler, ConnectorConfig> implements
   StatusNotificationHandler, TransactionHandler, MeterValuesHandler, ConnectorCommandContext {
 
+  /**
+   * Phantom-cycle detection window/threshold/reset-delay. See {@link PhantomCycleDetector}.
+   */
+  private static final long PHANTOM_WINDOW_MS = 60_000L;
+  private static final int PHANTOM_CYCLE_THRESHOLD = 2;
+  private static final long PHANTOM_RESET_DELAY_MS = 2_000L;
+
   private final AtomicInteger transactionId = new AtomicInteger();
   private final Logger logger = LoggerFactory.getLogger(ConnectorThingHandler.class);
+
+  private final PhantomCycleDetector phantomDetector =
+      new PhantomCycleDetector(PHANTOM_WINDOW_MS, PHANTOM_CYCLE_THRESHOLD);
 
   private OcppSender ocppSender;
   private String chargerSerialNumber;
@@ -174,7 +188,55 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     StringType val = new StringType(status.name());
     getCallback().stateUpdated(new ChannelUID(getThing().getUID(), "chargePointStatus"), val);
 
+    trackPhantomCycle(status);
+
     return new StatusNotificationConfirmation();
+  }
+
+  private void trackPhantomCycle(ChargePointStatus status) {
+    if (phantomDetector.record(status, System.currentTimeMillis())) {
+      logger.warn("Connector {} returned to Available {}+ times within {}s without charging —"
+              + " resetting connector state via ChangeAvailability(Inoperative→Operative)",
+          getThing().getUID(), PHANTOM_CYCLE_THRESHOLD, PHANTOM_WINDOW_MS / 1000);
+      resetConnectorState();
+    }
+  }
+
+  private void resetConnectorState() {
+    Integer connector = resolveConnectorId();
+    if (ocppSender == null || chargerSerialNumber == null || connector == null) {
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new ChangeAvailabilityRequest(connector, AvailabilityType.Inoperative))
+        .whenComplete((confirmation, ex) -> {
+          if (ex != null) {
+            logger.warn("ChangeAvailability(Inoperative) for {} failed: {}", getThing().getUID(), ex.getMessage());
+            return;
+          }
+          scheduler.schedule(() -> ocppSender.send(reference,
+              new ChangeAvailabilityRequest(connector, AvailabilityType.Operative))
+              .whenComplete((c, e) -> {
+                if (e != null) {
+                  logger.warn("ChangeAvailability(Operative) for {} failed: {}", getThing().getUID(), e.getMessage());
+                }
+              }), PHANTOM_RESET_DELAY_MS, TimeUnit.MILLISECONDS);
+        });
+  }
+
+  private Integer resolveConnectorId() {
+    Object value = getThing().getConfiguration().get("connectorId");
+    if (value instanceof Number) {
+      return ((Number) value).intValue();
+    }
+    if (value instanceof String) {
+      try {
+        return Integer.parseInt(((String) value).trim());
+      } catch (NumberFormatException e) {
+        return null;
+      }
+    }
+    return null;
   }
 
   @Override
