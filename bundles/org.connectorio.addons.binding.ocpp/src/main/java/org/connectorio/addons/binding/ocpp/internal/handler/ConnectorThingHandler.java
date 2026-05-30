@@ -241,6 +241,10 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     trackPhantomCycle(status);
     watchdog.onStatus(status, System.currentTimeMillis());
 
+    getCallback().stateUpdated(
+        new ChannelUID(getThing().getUID(), OcppBindingConstants.CABLE_CONNECTED.getAsString()),
+        OnOffType.from(isCableConnected(status)));
+
     return new StatusNotificationConfirmation();
   }
 
@@ -324,6 +328,24 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       }
     }
     return null;
+  }
+
+  /**
+   * Derive cable presence from the OCPP connector status. A cable is considered connected from the
+   * moment the EV is plugged in (Preparing) through the whole session up to teardown (Finishing);
+   * Available/Unavailable/Faulted/Reserved mean nothing is plugged in.
+   */
+  private static boolean isCableConnected(ChargePointStatus status) {
+    switch (status) {
+      case Preparing:
+      case Charging:
+      case SuspendedEV:
+      case SuspendedEVSE:
+      case Finishing:
+        return true;
+      default:
+        return false;
+    }
   }
 
   @Override
