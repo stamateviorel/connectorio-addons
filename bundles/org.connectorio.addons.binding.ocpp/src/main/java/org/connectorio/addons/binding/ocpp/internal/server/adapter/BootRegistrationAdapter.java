@@ -24,6 +24,16 @@ public class BootRegistrationAdapter extends CoreEventHandlerAdapter implements
   
   @Override
   public void registerSession(UUID session, ChargerReference chargerReference) {
+      // A reconnecting charger arrives on a fresh session UUID while its previous
+      // session's close may not yet have been reported by the WebSocket layer
+      // (half-open socket, fast reconnect, or bundle reload). If a stale same-serial
+      // entry survives, getSession() can resolve outbound CALLs to the dead UUID,
+      // whose socket is closed -> IllegalStateException "connect() must be called
+      // first" (inbound still works on the live socket, so the symptom is
+      // send-only). Evict any prior entry for this serial so the newest connection
+      // always wins and reconnects self-heal without a charger reboot.
+      registrations.entrySet().removeIf(
+          entry -> !entry.getKey().equals(session) && entry.getValue().equals(chargerReference));
       registrations.put(session, chargerReference);
   }
 

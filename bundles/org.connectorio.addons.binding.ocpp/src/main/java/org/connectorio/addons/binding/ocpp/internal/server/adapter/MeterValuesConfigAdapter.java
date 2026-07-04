@@ -64,6 +64,9 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
     if (reference == null) {
       return null;
     }
+    if (!firstBootForConfig(reference)) {
+      return null;
+    }
     apply(reference, "MeterValueSampleInterval", Integer.toString(sampleInterval));
     apply(reference, "MeterValuesSampledData", sampledData);
     apply(reference, "MeterValuesAlignedData", sampledData);
@@ -73,7 +76,8 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
 
   private void apply(ChargerReference reference, String key, String value) {
     boolean isMeterMeasurandKey = "MeterValuesSampledData".equals(key) || "MeterValuesAlignedData".equals(key);
-    sender.send(reference, new ChangeConfigurationRequest(key, value)).whenComplete((confirmation, ex) -> {
+    sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), CONFIG_SETTLE_SECONDS)
+        .whenComplete((confirmation, ex) -> {
       if (ex != null) {
         logger.warn("ChangeConfiguration[{}] for {} failed: {}", key, reference, ex.getMessage());
         return;

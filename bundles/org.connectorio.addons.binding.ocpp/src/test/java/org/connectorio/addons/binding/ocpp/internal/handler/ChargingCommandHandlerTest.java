@@ -42,6 +42,7 @@ class ChargingCommandHandlerTest {
     when(context.getOcppSender()).thenReturn(sender);
     when(context.getChargerSerialNumber()).thenReturn("charger-serial");
     when(context.getRemoteStartTag()).thenReturn("openhab");
+    when(context.getConnectorId()).thenReturn(2);
     when(sender.send(any(ChargerReference.class), any(Request.class)))
       .thenReturn(CompletableFuture.completedFuture(null));
 
@@ -54,8 +55,32 @@ class ChargingCommandHandlerTest {
 
     assertThat(requestCaptor.getValue())
       .isInstanceOf(RemoteStartTransactionRequest.class);
-    assertThat(((RemoteStartTransactionRequest) requestCaptor.getValue()).getIdTag())
-      .isEqualTo("openhab");
+    RemoteStartTransactionRequest sent = (RemoteStartTransactionRequest) requestCaptor.getValue();
+    assertThat(sent.getIdTag()).isEqualTo("openhab");
+    // The remote start must target the connector — required for multi-connector chargers.
+    assertThat(sent.getConnectorId()).isEqualTo(2);
+  }
+
+  @Test
+  void shouldOmitConnectorIdWhenNotPositive() {
+    // given — a connectorId of 0 (or null) is invalid for RemoteStart; it must be omitted.
+    when(context.getOcppSender()).thenReturn(sender);
+    when(context.getChargerSerialNumber()).thenReturn("charger-serial");
+    when(context.getRemoteStartTag()).thenReturn("openhab");
+    when(context.getConnectorId()).thenReturn(0);
+    when(sender.send(any(ChargerReference.class), any(Request.class)))
+      .thenReturn(CompletableFuture.completedFuture(null));
+
+    // when
+    handler.handle(OnOffType.ON, context);
+
+    // then
+    ArgumentCaptor<Request> requestCaptor = ArgumentCaptor.forClass(Request.class);
+    verify(sender).send(any(ChargerReference.class), requestCaptor.capture());
+
+    RemoteStartTransactionRequest sent = (RemoteStartTransactionRequest) requestCaptor.getValue();
+    assertThat(sent.getConnectorId()).isNull();
+    assertThat(sent.validate()).isTrue();
   }
 
   @Test

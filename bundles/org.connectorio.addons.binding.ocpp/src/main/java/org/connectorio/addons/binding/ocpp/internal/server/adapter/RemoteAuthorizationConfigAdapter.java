@@ -44,7 +44,10 @@ public class RemoteAuthorizationConfigAdapter extends CoreEventHandlerAdapter {
     if (reference == null) {
       return null;
     }
-    sender.send(reference, new ChangeConfigurationRequest("AuthorizeRemoteTxRequests", "false"))
+    if (!firstBootForConfig(reference)) {
+      return null;
+    }
+    sender.sendAfter(reference, new ChangeConfigurationRequest("AuthorizeRemoteTxRequests", "false"), CONFIG_SETTLE_SECONDS)
         .whenComplete((confirmation, ex) -> {
       if (ex != null) {
         logger.warn("ChangeConfiguration[AuthorizeRemoteTxRequests=false] for {} failed: {}", reference, ex.getMessage());

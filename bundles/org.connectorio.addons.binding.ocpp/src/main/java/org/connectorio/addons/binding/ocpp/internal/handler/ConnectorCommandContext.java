@@ -11,4 +11,5 @@ public interface ConnectorCommandContext {
     Integer getConnectorId();
     ScheduledExecutorService getScheduler();
     long getProfileMinIntervalMs();
+    boolean isForceTxDefaultProfile();
 }

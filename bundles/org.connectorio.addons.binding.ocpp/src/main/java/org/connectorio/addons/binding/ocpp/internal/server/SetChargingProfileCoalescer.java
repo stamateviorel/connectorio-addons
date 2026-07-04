@@ -48,6 +48,13 @@ public class SetChargingProfileCoalescer {
     void schedule(Runnable task, long delayMs);
   }
 
+  /**
+   * Re-send an unchanged limit at most this often (keepalive). A persistent TxDefaultProfile gains
+   * nothing from identical repeats, but periodically re-applying covers a value the charger may have
+   * dropped (e.g. after a reboot).
+   */
+  private static final long REAPPLY_INTERVAL_MS = 300_000;
+
   private final long minIntervalMs;
   private final LongSupplier clock;
   private final Sender sender;
@@ -57,6 +64,10 @@ public class SetChargingProfileCoalescer {
   private Integer pending;
   private long lastSentAtMs;
   private boolean drainScheduled;
+  // Last limit the charger acknowledged without error, and when — drives same-value dedup. A send that
+  // fails (session dropped) does NOT update these, so a retry of the same value still goes out.
+  private Integer lastConfirmedValue;
+  private long lastConfirmedAtMs;
 
   public SetChargingProfileCoalescer(long minIntervalMs, LongSupplier clock, Sender sender,
       DelayedExecutor delayedExecutor) {
@@ -72,16 +83,29 @@ public class SetChargingProfileCoalescer {
       pending = wireValue;
       return;
     }
+    // Skip re-sending a limit the charger already holds. A charge point that has acknowledged this
+    // value gains nothing from an identical repeat, and a steady stream of identical CALLs (an EMS
+    // loop re-asserting the same setpoint every tick) can outpace a slow charger until one times out
+    // and the session is dropped — which makes the *next*, genuinely new command fail to send. A value
+    // is re-applied only when it actually changes, or once the keepalive window elapses.
+    if (lastConfirmedValue != null && lastConfirmedValue == wireValue
+        && clock.getAsLong() - lastConfirmedAtMs < REAPPLY_INTERVAL_MS) {
+      return;
+    }
     sendNow(wireValue);
   }
 
   private void sendNow(int wireValue) {
     inFlight = wireValue;
     lastSentAtMs = clock.getAsLong();
-    sender.send(wireValue).whenComplete((result, error) -> settled());
+    sender.send(wireValue).whenComplete((result, error) -> settled(wireValue, error));
   }
 
-  private synchronized void settled() {
+  private synchronized void settled(int sentValue, Throwable error) {
+    if (error == null) {
+      lastConfirmedValue = sentValue;
+      lastConfirmedAtMs = clock.getAsLong();
+    }
     Integer wasInFlight = inFlight;
     inFlight = null;
     if (pending == null || pending.equals(wasInFlight)) {

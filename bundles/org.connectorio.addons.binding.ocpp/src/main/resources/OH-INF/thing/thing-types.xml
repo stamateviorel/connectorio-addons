@@ -196,6 +196,10 @@
         <label>Unlock Connector</label>
         <description>Momentary. Send ON to issue UnlockConnector for this connector (releases the cable latch / terminates a stuck transaction); the channel returns to OFF once the request settles.</description>
       </channel>
+      <channel id="availability" typeId="switch">
+        <label>Availability</label>
+        <description>Send ON to make this connector Operative (ChangeAvailability Operative), OFF to make it Inoperative. Recovers a connector the charger is holding Unavailable.</description>
+      </channel>
       <channel id="hardwareMaxCurrent" typeId="current">
         <label>Hardware Max Current</label>
         <description>Read/write the charger's persisted hardware current ceiling via a vendor-specific configuration key (set hardwareMaxCurrentKey on the connector; e.g. Wallbox uses chargingALimitConn1). Commands are written with ChangeConfiguration; REFRESH reads back with GetConfiguration. Inactive if no key is configured.</description>
@@ -358,6 +362,19 @@
         </description>
         <default>500</default>
         <unitLabel>ms</unitLabel>
+        <advanced>true</advanced>
+      </parameter>
+      <parameter name="forceTxDefaultProfile" type="boolean" required="false">
+        <label>Force TxDefaultProfile</label>
+        <description>
+          Always send charge-limit SetChargingProfile as a TxDefaultProfile (no transactionId) instead
+          of a per-transaction TxProfile. Some charge points (Phoenix Contact CHARX) Reject a TxProfile
+          when no transaction is active — while the connector is in B/Finishing or just after a charger
+          reboot — losing the limit. A TxDefaultProfile is accepted regardless and persists across
+          transactions and reboots, which is correct for current control on a meter-less charger. Leave
+          off for metered chargers that need a TxProfile to apply a mid-session limit immediately.
+        </description>
+        <default>false</default>
         <advanced>true</advanced>
       </parameter>
       <parameter name="hardwareMaxCurrentKey" type="text" required="false">

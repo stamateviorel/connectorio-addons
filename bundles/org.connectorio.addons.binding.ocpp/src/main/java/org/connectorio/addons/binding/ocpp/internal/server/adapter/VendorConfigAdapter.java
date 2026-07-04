@@ -52,6 +52,9 @@ public class VendorConfigAdapter extends CoreEventHandlerAdapter {
     if (reference == null) {
       return null;
     }
+    if (!firstBootForConfig(reference)) {
+      return null;
+    }
     for (Map.Entry<String, String> entry : vendorKeys.entrySet()) {
       apply(reference, entry.getKey(), entry.getValue());
     }
@@ -59,7 +62,8 @@ public class VendorConfigAdapter extends CoreEventHandlerAdapter {
   }
 
   private void apply(ChargerReference reference, String key, String value) {
-    sender.send(reference, new ChangeConfigurationRequest(key, value)).whenComplete((confirmation, ex) -> {
+    sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), CONFIG_SETTLE_SECONDS)
+        .whenComplete((confirmation, ex) -> {
       if (ex != null) {
         logger.warn("ChangeConfiguration[{}={}] for {} failed: {}", key, value, reference, ex.getMessage());
       } else {

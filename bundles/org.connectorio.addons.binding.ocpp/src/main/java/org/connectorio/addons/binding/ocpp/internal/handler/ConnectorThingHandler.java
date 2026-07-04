@@ -73,6 +73,16 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   private static final long DEFAULT_PROFILE_MIN_INTERVAL_MS = 500L;
   private static final long WATCHDOG_TICK_SECONDS = 5L;
   private static final long AVAILABILITY_RESTORE_DELAY_MS = 2_000L;
+  private static final long DEFAULT_METER_POLL_SECONDS = 30L;
+
+  /**
+   * Thing property under which the active transaction id is persisted. Thing properties live in the
+   * JSONDB and survive a binding reload / openHAB restart, so a connector that was charging when the
+   * binding stopped recovers its transaction id on startup. Without it, the charger's StopTransaction
+   * on unplug (which carries no connectorId) could not be routed back to its connector, leaving the
+   * connector stuck in Finishing/Charging — and a dangling transaction can block the next session.
+   */
+  private static final String PROPERTY_ACTIVE_TRANSACTION = "activeTransactionId";
 
   // Transaction-id sequence. Replaced with a charger-wide shared sequence (see setTransactionSequence)
   // so connectors on the same charge point never issue colliding ids — StopTransaction carries only a
@@ -92,6 +102,32 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   private String remoteStartTag;
   private Integer connectorId;
   private String hardwareMaxCurrentKey;
+
+  // MeterValues poll (TriggerMessage fallback). Chargers push MeterValues only during an active
+  // transaction; a charger delivering power without an OCPP transaction never pushes, so power/energy
+  // channels stay at zero. lastStatus/lastMeterValuesMs let runWatchdog pull a fresh sample when stale.
+  private volatile ChargePointStatus lastStatus;
+  private volatile long lastMeterValuesMs;
+  private long lastMeterPollMs;
+  private long meterPollIntervalMs = DEFAULT_METER_POLL_SECONDS * 1000L;
+
+  // Status-freshness re-confirm. A StatusNotification dropped during a session close/reconnect leaves
+  // the connector frozen in a stale "busy" status (e.g. a SuspendedEV the charger has since left) that
+  // never refreshes, because a charger only re-reports on a status CHANGE. While a cable is believed
+  // connected but neither a StatusNotification nor a MeterValues sample has arrived for this long,
+  // re-pull this connector's status with a per-connector TriggerMessage(StatusNotification).
+  private static final long STATUS_RECONFIRM_AFTER_MS = 300_000L;
+  private volatile long lastStatusNotificationMs;
+  private long lastStatusReconfirmMs;
+
+  // The binding owns restoring a connector it made Inoperative (stuck-recovery cycle). If that Operative
+  // restore is lost on a dropped session it must be retried — otherwise the connector strands Unavailable
+  // indefinitely (it sat that way ~12 days). While set, the watchdog re-asserts Operative until the CALL
+  // is accepted. Only set for binding-initiated cycles and cleared the moment the user takes manual
+  // control of availability, so a deliberately disabled connector is never overridden.
+  private volatile boolean operativeRestorePending;
+  private long lastOperativeRetryMs;
+  private static final long OPERATIVE_RETRY_INTERVAL_MS = 30_000L;
 
   private final ChargeLimitCommandHandler chargeLimitHandler;
   private final ChargingCommandHandler chargingHandler;
@@ -139,9 +175,23 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     return currentTransactionId;
   }
 
+  /**
+   * Set the active transaction id and persist it so it survives a binding/openHAB restart. Pass
+   * {@code null} when the transaction ends to clear the persisted value.
+   */
+  private void setCurrentTransactionId(Integer id) {
+    this.currentTransactionId = id;
+    updateProperty(PROPERTY_ACTIVE_TRANSACTION, id == null ? null : id.toString());
+  }
+
   @Override
   public Integer getConnectorId() {
     return connectorId;
+  }
+
+  @Override
+  public boolean isForceTxDefaultProfile() {
+    return getThingConfig().map(config -> config.forceTxDefaultProfile).orElse(false);
   }
 
   @Override
@@ -175,8 +225,22 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       }
       connectorId = config.get().connectorId;
       hardwareMaxCurrentKey = config.get().hardwareMaxCurrentKey;
+      Integer pollSeconds = config.get().meterValuesPollSeconds;
+      meterPollIntervalMs = (pollSeconds != null && pollSeconds > 0) ? pollSeconds * 1000L : 0L;
     } else {
       remoteStartTag = ConnectorConfig.DEFAULT_REMOTE_START_TAG;
+    }
+    // Recover an in-flight transaction persisted before the last stop/restart so a StopTransaction
+    // arriving after the restart still routes to this connector (see PROPERTY_ACTIVE_TRANSACTION).
+    String persisted = getThing().getProperties().get(PROPERTY_ACTIVE_TRANSACTION);
+    if (persisted != null && !persisted.trim().isEmpty()) {
+      try {
+        currentTransactionId = Integer.valueOf(persisted.trim());
+        logger.info("Restored active transaction {} for {} from persisted state.", currentTransactionId,
+            getThing().getUID());
+      } catch (NumberFormatException e) {
+        logger.warn("Ignoring malformed persisted transaction id '{}' for {}", persisted, getThing().getUID());
+      }
     }
     watchdogFuture = scheduler.scheduleWithFixedDelay(this::runWatchdog,
         WATCHDOG_TICK_SECONDS, WATCHDOG_TICK_SECONDS, TimeUnit.SECONDS);
@@ -215,6 +279,11 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       if (command == OnOffType.ON) {
         sendUnlock();
       }
+    } else if (OcppBindingConstants.AVAILABILITY.getAsString().equals(channelId)) {
+      if (command instanceof OnOffType) {
+        operativeRestorePending = false; // user is taking manual control — don't fight their choice
+        sendAvailability(command == OnOffType.ON ? AvailabilityType.Operative : AvailabilityType.Inoperative);
+      }
     } else if (OcppBindingConstants.HARDWARE_MAX_CURRENT.getAsString().equals(channelId)) {
       if (command instanceof RefreshType) {
         readHardwareMaxCurrent();
@@ -239,6 +308,26 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       }
       getCallback().stateUpdated(
           new ChannelUID(getThing().getUID(), OcppBindingConstants.RESET.getAsString()), OnOffType.OFF);
+    });
+  }
+
+  /**
+   * Send ChangeAvailability for this connector. ON → Operative, OFF → Inoperative. Lets a connector
+   * the charger is holding Inoperative (e.g. disabled in the charger UI, or a stuck-recovery
+   * Inoperative whose Operative restore failed on a dropped session and was never retried) be brought
+   * back from openHAB without touching the charger's web UI.
+   */
+  private void sendAvailability(AvailabilityType type) {
+    if (ocppSender == null || chargerSerialNumber == null || connectorId == null) {
+      return;
+    }
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new ChangeAvailabilityRequest(connectorId, type)).whenComplete((confirmation, ex) -> {
+      if (ex != null) {
+        logger.warn("ChangeAvailability({}) for {} failed: {}", type, getThing().getUID(), ex.getMessage());
+      } else {
+        logger.info("ChangeAvailability({}) for {}: {}", type, getThing().getUID(), confirmation);
+      }
     });
   }
 
@@ -313,13 +402,14 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
 
   @Override
   public MeterValuesConfirmation handleMeterValues(MeterValuesRequest request) {
+    lastMeterValuesMs = System.currentTimeMillis();
     ThingHandlerCallback callback = getCallback();
 
     // push transaction id
     Integer transactionId = request.getTransactionId();
     // transactionId is null outside of an active charge transaction
     if (transactionId != null) {
-      currentTransactionId = transactionId;
+      setCurrentTransactionId(transactionId);
       callback.stateUpdated(new ChannelUID(getThing().getUID(), "transactionId"), new DecimalType(transactionId));
     }
 
@@ -355,6 +445,11 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   @Override
   public StatusNotificationConfirmation handleStatusNotification(StatusNotificationRequest request) {
     ChargePointStatus status = request.getStatus();
+    lastStatus = status;
+    lastStatusNotificationMs = System.currentTimeMillis();
+    if (status != ChargePointStatus.Unavailable) {
+      operativeRestorePending = false; // the connector left Unavailable — restore succeeded
+    }
 
     StringType val = new StringType(status.name());
     getCallback().stateUpdated(new ChannelUID(getThing().getUID(), "chargePointStatus"), val);
@@ -382,6 +477,9 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
   }
 
   private void runWatchdog() {
+    pollMeterValuesIfStale();
+    reconfirmStatusIfStale();
+    reAssertOperativeIfPending();
     org.connectorio.addons.binding.ocpp.internal.server.StuckStateWatchdog.Action action =
         watchdog.evaluate(System.currentTimeMillis());
     if (action == org.connectorio.addons.binding.ocpp.internal.server.StuckStateWatchdog.Action.NONE) {
@@ -413,6 +511,95 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     }
   }
 
+  /**
+   * Re-pull this connector's status when it has been frozen in a "busy" state too long. A
+   * StatusNotification dropped during a session close/reconnect leaves the connector stuck (e.g. a
+   * SuspendedEV the charger has since left), and a charge point only re-reports on a status CHANGE,
+   * so the stale value would persist indefinitely. When a cable is believed connected but neither a
+   * StatusNotification nor a MeterValues sample has arrived within {@link #STATUS_RECONFIRM_AFTER_MS},
+   * ask the charger to re-send status for THIS connector — connectorId is set, since a multi-connector
+   * charger (e.g. Phoenix CHARX) does not answer a connectorId-less StatusNotification trigger
+   * per connector. A genuine status is simply re-confirmed; a stale one self-corrects.
+   */
+  private void reconfirmStatusIfStale() {
+    long now = System.currentTimeMillis();
+    if (!shouldReconfirmStatus(lastStatus, now, lastStatusNotificationMs, lastMeterValuesMs,
+        lastStatusReconfirmMs, STATUS_RECONFIRM_AFTER_MS)) {
+      return;
+    }
+    Integer connector = resolveConnectorId();
+    if (ocppSender == null || chargerSerialNumber == null || connector == null) {
+      return;
+    }
+    lastStatusReconfirmMs = now;
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    TriggerMessageRequest trigger = new TriggerMessageRequest(TriggerMessageRequestType.StatusNotification);
+    trigger.setConnectorId(connector);
+    ocppSender.send(reference, trigger).whenComplete((confirmation, ex) -> {
+      if (ex != null) {
+        logger.debug("Status re-confirm TriggerMessage(StatusNotification) for {} failed: {}",
+            getThing().getUID(), ex.getMessage());
+      } else {
+        logger.debug("Status re-confirm TriggerMessage(StatusNotification) for {}: {}",
+            getThing().getUID(), confirmation);
+      }
+    });
+  }
+
+  /**
+   * Pure decision for {@link #reconfirmStatusIfStale()} — package-private for unit testing. Re-confirm
+   * only when the connector believes a cable is connected (a "busy" status that can go stale) and it
+   * has been silent — no StatusNotification, no MeterValues, and no prior re-confirm — for at least
+   * {@code intervalMs}. An idle/terminal status (Available, Unavailable, Faulted) or any recent
+   * activity suppresses it.
+   */
+  static boolean shouldReconfirmStatus(ChargePointStatus status, long now, long lastStatusMs,
+      long lastMeterValuesMs, long lastReconfirmMs, long intervalMs) {
+    if (status == null || !isCableConnected(status)) {
+      return false;
+    }
+    return now - lastStatusMs >= intervalMs
+        && now - lastMeterValuesMs >= intervalMs
+        && now - lastReconfirmMs >= intervalMs;
+  }
+
+  /**
+   * Pull a fresh MeterValues sample with TriggerMessage(MeterValues) when a cable is connected but no
+   * samples have arrived within {@code meterPollIntervalMs}. Chargers push MeterValues only during an
+   * active transaction (per MeterValueSampleInterval); a charger delivering power without an OCPP
+   * transaction — or one whose transaction predates the server connection — never pushes, so the
+   * power/energy channels would stay at zero. This is the server-side fallback. Disabled (interval 0)
+   * for chargers without an internal meter (metered externally, e.g. CHARX over Modbus).
+   */
+  private void pollMeterValuesIfStale() {
+    if (meterPollIntervalMs <= 0) {
+      return;
+    }
+    ChargePointStatus status = lastStatus;
+    if (status == null || !isCableConnected(status)) {
+      return;
+    }
+    long now = System.currentTimeMillis();
+    if (now - lastMeterValuesMs < meterPollIntervalMs || now - lastMeterPollMs < meterPollIntervalMs) {
+      return;
+    }
+    Integer connector = resolveConnectorId();
+    if (ocppSender == null || chargerSerialNumber == null || connector == null) {
+      return;
+    }
+    lastMeterPollMs = now;
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    TriggerMessageRequest trigger = new TriggerMessageRequest(TriggerMessageRequestType.MeterValues);
+    trigger.setConnectorId(connector);
+    ocppSender.send(reference, trigger).whenComplete((confirmation, ex) -> {
+      if (ex != null) {
+        logger.debug("TriggerMessage(MeterValues) poll for {} failed: {}", getThing().getUID(), ex.getMessage());
+      } else {
+        logger.debug("TriggerMessage(MeterValues) poll for {}: {}", getThing().getUID(), confirmation);
+      }
+    });
+  }
+
   private void cycleAvailability(ChargerReference reference, Integer connector) {
     ocppSender.send(reference, new ChangeAvailabilityRequest(connector, AvailabilityType.Inoperative))
         .whenComplete((confirmation, ex) -> {
@@ -420,10 +607,42 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
             logger.warn("ChangeAvailability(Inoperative) for {} failed: {}", getThing().getUID(), ex.getMessage());
             return;
           }
-          scheduler.schedule(() -> sendRecovery(reference,
-              new ChangeAvailabilityRequest(connector, AvailabilityType.Operative),
-              "ChangeAvailability(Operative)"), AVAILABILITY_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
+          operativeRestorePending = true; // we now owe this connector an Operative; the watchdog guarantees it
+          scheduler.schedule(this::restoreOperative, AVAILABILITY_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
         });
+  }
+
+  /**
+   * Send ChangeAvailability(Operative) to undo a binding-initiated Inoperative, clearing the pending
+   * marker only once the CALL is actually accepted. A send lost on a dropped session leaves the marker
+   * set so {@link #reAssertOperativeIfPending()} retries it — a connector can no longer strand Unavailable.
+   */
+  private void restoreOperative() {
+    Integer connector = resolveConnectorId();
+    if (ocppSender == null || chargerSerialNumber == null || connector == null) {
+      return;
+    }
+    lastOperativeRetryMs = System.currentTimeMillis();
+    ChargerReference reference = new ChargerReference(chargerSerialNumber);
+    ocppSender.send(reference, new ChangeAvailabilityRequest(connector, AvailabilityType.Operative))
+        .whenComplete((confirmation, ex) -> {
+          if (ex != null) {
+            logger.warn("ChangeAvailability(Operative) restore for {} failed: {} — will retry",
+                getThing().getUID(), ex.getMessage());
+          } else {
+            logger.info("ChangeAvailability(Operative) restore for {}: {}", getThing().getUID(), confirmation);
+            operativeRestorePending = false;
+          }
+        });
+  }
+
+  /** Re-assert a pending Operative restore (rate-limited) until the charger accepts it. */
+  private void reAssertOperativeIfPending() {
+    if (!operativeRestorePending
+        || System.currentTimeMillis() - lastOperativeRetryMs < OPERATIVE_RETRY_INTERVAL_MS) {
+      return;
+    }
+    restoreOperative();
   }
 
   private void sendRecovery(ChargerReference reference, Request request, String label) {
@@ -474,7 +693,7 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     String tag = request.getIdTag();
 
     int txId = generateId();
-    currentTransactionId = txId;
+    setCurrentTransactionId(txId);
 
     ThingHandlerCallback callback = getCallback();
     callback.stateUpdated(new ChannelUID(getThing().getUID(), "idTag"), new StringType(tag));
@@ -497,7 +716,7 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
       return new StopTransactionConfirmation();
     }
 
-    currentTransactionId = null;
+    setCurrentTransactionId(null);
     ThingHandlerCallback callback = getCallback();
     callback.stateUpdated(new ChannelUID(getThing().getUID(), "idTag"), new StringType(tag));
     callback.stateUpdated(new ChannelUID(getThing().getUID(), OcppBindingConstants.CHARGING.getAsString()), OnOffType.OFF);

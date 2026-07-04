@@ -39,14 +39,17 @@ public class OcularSolarEcoMode {
   		return;
   	}
   	
-  	if (initialOcularEcoMode == null) {
+  	// NONE (the documented "disabled" sentinel and the config default), blank, or
+  	// null all mean "do not push an eco mode on connect" — return silently.
+  	if (initialOcularEcoMode == null || initialOcularEcoMode.isBlank()
+  			|| "NONE".equalsIgnoreCase(initialOcularEcoMode)) {
   		return;
-  	}  	
+  	}
   	EcoMode ecoMode;
     try {
        ecoMode = EcoMode.valueOf(initialOcularEcoMode);
     } catch (IllegalArgumentException e) {
-    	logger.warn("Cannot set ecoMode as it is the unknown value %s.", initialOcularEcoMode);
+    	logger.warn("Cannot set ecoMode as it is the unknown value {}.", initialOcularEcoMode);
     	return;
     }
   	

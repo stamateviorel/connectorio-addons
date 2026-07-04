@@ -109,8 +109,13 @@ public class ChargeLimitCommandHandler {
         // one. Fall back to TxDefaultProfile only when no transaction is active, which seeds the
         // limit for the next session. The transaction id is read here, at send time, so a
         // coalesced limit always carries whichever transaction is current when it actually goes out.
+        //
+        // forceTxDefaultProfile overrides this: some charge points (Phoenix CHARX) Reject a TxProfile
+        // whenever no transaction is active (connector in B/Finishing, or just after a charger reboot),
+        // and a TxDefaultProfile is accepted regardless and persists across transactions/reboots — the
+        // correct choice for current control on a meter-less charger.
         Integer transactionId = context.getCurrentTransactionId();
-        if (transactionId != null) {
+        if (transactionId != null && !context.isForceTxDefaultProfile()) {
             profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxProfile);
             profile.setTransactionId(transactionId);
         } else {

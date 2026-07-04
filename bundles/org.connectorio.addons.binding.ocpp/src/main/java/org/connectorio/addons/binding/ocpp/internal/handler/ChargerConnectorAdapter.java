@@ -36,6 +36,15 @@ public class ChargerConnectorAdapter implements StatusNotificationHandler, Meter
   public void addConnector(int connector, ConnectorThingHandler handler) {
     handler.setTransactionSequence(transactionSequence);
     handlers.put(connector, handler);
+    // A connector that was charging when the binding stopped restored its transaction id from
+    // persisted state in initialize(). Re-register that mapping so the charger's StopTransaction
+    // (which carries no connectorId) still routes back here after the restart, and advance the shared
+    // id sequence past it so a freshly started transaction can never reuse the still-open id.
+    Integer restored = handler.getCurrentTransactionId();
+    if (restored != null) {
+      transactionMap.put(connector, restored);
+      transactionSequence.updateAndGet(current -> Math.max(current, restored + 1));
+    }
   }
 
   public void removeConnector(int connector) {
@@ -89,8 +98,13 @@ public class ChargerConnectorAdapter implements StatusNotificationHandler, Meter
     if (connectorId != null) {
       return handle(handler -> handler.handleStopTransaction(request), connectorId);
     }
-    // unknown transaction
-    return null;
+    // Unknown transaction — no StartTransaction was tracked for this id. Common with free-charging
+    // (FreeMode): the charger runs a local transaction and sends StopTransaction at session end without
+    // a StartTransaction we ever saw. OCPP requires the CSMS to ACK StopTransaction regardless; reply
+    // with an empty confirmation instead of returning null, which makes the library send a NotSupported
+    // CallError — leaving the charger retrying or holding a dangling transaction (which can then block
+    // the next StartTransaction).
+    return new StopTransactionConfirmation();
   }
 
   private <C> C handle(Function<ConnectorThingHandler, C> handler, int connector) {

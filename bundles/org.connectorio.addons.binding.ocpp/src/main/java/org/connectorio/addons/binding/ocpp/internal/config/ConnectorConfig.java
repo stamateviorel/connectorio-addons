@@ -24,4 +24,23 @@ public class ConnectorConfig implements Configuration {
   public Integer connectorId;
   public String remoteStartTag = DEFAULT_REMOTE_START_TAG;
   public String hardwareMaxCurrentKey;
+
+  /**
+   * How often, in seconds, to pull a fresh MeterValues sample with TriggerMessage(MeterValues) while a
+   * cable is connected but no samples arrive on their own. 0 disables the poll — set 0 for chargers
+   * without an internal energy meter (e.g. Phoenix Contact CHARX, metered externally over Modbus).
+   */
+  public Integer meterValuesPollSeconds = 30;
+
+  /**
+   * Always send charge-limit SetChargingProfile as a TxDefaultProfile (no transactionId) rather than a
+   * per-transaction TxProfile. Some charge points (e.g. Phoenix Contact CHARX) Reject a TxProfile
+   * whenever there is no active transaction — which happens while the connector is in B/Finishing or
+   * just after a charger reboot before the transaction re-opens — so a transient limit is lost. A
+   * TxDefaultProfile is accepted regardless of transaction state and persists across transactions and
+   * charger reboots, which is the correct behaviour for current control on a meter-less charger (no
+   * per-transaction accounting is needed). Leave false for chargers that require a TxProfile to apply a
+   * mid-session limit immediately (metered Wallboxes).
+   */
+  public boolean forceTxDefaultProfile = false;
 }

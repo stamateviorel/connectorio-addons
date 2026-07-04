@@ -42,6 +42,10 @@ class SetChargingProfileCoalescerTest {
     void complete(int index) {
       futures.get(index).complete(null);
     }
+
+    void fail(int index) {
+      futures.get(index).completeExceptionally(new RuntimeException("session dropped"));
+    }
   }
 
   /** Runs scheduled drains immediately so timing is deterministic. */
@@ -122,5 +126,50 @@ class SetChargingProfileCoalescerTest {
     // Drain scheduled with the remaining 300ms of the 500ms minimum interval.
     assertThat(scheduledDelays).containsExactly(300L);
     assertThat(sender.sent).containsExactly(10, 14);
+  }
+
+  @Test
+  void skipsResendingAnUnchangedConfirmedValue() {
+    RecordingSender sender = new RecordingSender();
+    long[] now = {0L};
+    SetChargingProfileCoalescer coalescer =
+        new SetChargingProfileCoalescer(0, () -> now[0], sender, IMMEDIATE);
+
+    coalescer.submit(6);
+    sender.complete(0);       // confirmed
+    coalescer.submit(6);      // same value, within keepalive → suppressed
+    coalescer.submit(6);
+    assertThat(sender.sent).containsExactly(6);
+
+    coalescer.submit(10);     // genuine change → goes out
+    sender.complete(1);
+    assertThat(sender.sent).containsExactly(6, 10);
+  }
+
+  @Test
+  void resendsUnchangedValueOnceTheKeepaliveWindowElapses() {
+    RecordingSender sender = new RecordingSender();
+    long[] now = {0L};
+    SetChargingProfileCoalescer coalescer =
+        new SetChargingProfileCoalescer(0, () -> now[0], sender, IMMEDIATE);
+
+    coalescer.submit(6);
+    sender.complete(0);
+    now[0] = 300_001L;        // past the keepalive interval
+    coalescer.submit(6);      // re-applied as keepalive
+    assertThat(sender.sent).containsExactly(6, 6);
+  }
+
+  @Test
+  void retriesAfterAFailedSendEvenForTheSameValue() {
+    RecordingSender sender = new RecordingSender();
+    long[] now = {0L};
+    SetChargingProfileCoalescer coalescer =
+        new SetChargingProfileCoalescer(0, () -> now[0], sender, IMMEDIATE);
+
+    coalescer.submit(6);
+    sender.fail(0);           // session dropped — value never confirmed
+    coalescer.submit(6);      // same value, but the failed one must not be deduped → retried
+    assertThat(sender.sent).containsExactly(6, 6);
   }
 }

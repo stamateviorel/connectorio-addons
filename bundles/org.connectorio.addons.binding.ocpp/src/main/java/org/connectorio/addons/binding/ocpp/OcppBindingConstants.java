@@ -54,6 +54,7 @@ public interface OcppBindingConstants extends BaseBindingConstants {
   ChannelRef CABLE_CONNECTED = new ChannelRef("cableConnected");
   ChannelRef RESET = new ChannelRef("reset");
   ChannelRef LOCK = new ChannelRef("lock");
+  ChannelRef AVAILABILITY = new ChannelRef("availability");
   ChannelRef HARDWARE_MAX_CURRENT = new ChannelRef("hardwareMaxCurrent");
   ChannelRef ENERGY_ACTIVE_EXPORT = new ChannelRef("energyActiveExport");
   ChannelRef ENERGY_ACTIVE_IMPORT = new ChannelRef("energyActiveImport");

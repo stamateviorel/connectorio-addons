@@ -27,4 +27,17 @@ public interface OcppSender {
 
   <T extends Confirmation> CompletionStage<T> send(ChargerReference reference, Request request);
 
+  /**
+   * Send a CALL after a settle delay. Used for best-effort boot-time configuration so the burst is
+   * not fired the instant a (re)booted charger announces itself — a charger that just rebooted is
+   * often not yet ready to answer ChangeConfiguration, and an unanswered CALL times out and closes
+   * the freshly established session (see the timeout handling in the server's session sender),
+   * delaying charging. Deferring the burst lets the charger settle first. The default sends
+   * immediately; the server overrides it to actually defer on its scheduler.
+   */
+  default <T extends Confirmation> CompletionStage<T> sendAfter(ChargerReference reference, Request request,
+      long delaySeconds) {
+    return send(reference, request);
+  }
+
 }
