@@ -113,7 +113,26 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     }
     eventHandlers.addFirst(new VendorConfigAdapter(bootAdapter, server, VendorConfigAdapter.parse(config.vendorConfig)));
     server.activate();
+    reattachAlreadyInitializedChargers();
     updateStatus(ThingStatus.ONLINE);
+  }
+
+  /**
+   * A config change on this bridge (e.g. editing vendorConfig) makes openHAB call dispose()+
+   * initialize() on THIS handler only — child charger Things are untouched and stay initialized,
+   * so childHandlerInitialized() never fires again for them. Without this, the freshly built
+   * bridgeHandler starts with an empty charger map, and every inbound StatusNotification/
+   * Heartbeat/MeterValues/etc. finds no registered handler: the OCPP library reports the action
+   * NotSupported for every already-connected charger until the bundle is restarted. Re-run the
+   * same registration childHandlerInitialized() does for any child whose handler already exists.
+   */
+  private void reattachAlreadyInitializedChargers() {
+    for (Thing childThing : getThing().getThings()) {
+      ThingHandler childHandler = childThing.getHandler();
+      if (childHandler instanceof ChargerThingHandler) {
+        childHandlerInitialized(childHandler, childThing);
+      }
+    }
   }
 
   @Override
