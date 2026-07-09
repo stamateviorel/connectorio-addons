@@ -73,13 +73,17 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
     if (reference == null) {
       return null;
     }
-    if (meterlessChargers.contains(reference.getSerial())) {
-      // No internal meter — nothing meaningful to sample. Skip the ChangeConfiguration burst
-      // and the resulting periodic MeterValues traffic entirely rather than push settings that
-      // only ever produce NaN readings.
+    if (!firstBootForConfig(reference)) {
       return null;
     }
-    if (!firstBootForConfig(reference)) {
+    if (meterlessChargers.contains(reference.getSerial())) {
+      // No internal meter — nothing meaningful to sample. ChangeConfiguration values persist on
+      // the charger, so merely skipping our usual push would leave a previously-configured
+      // interval running forever; explicitly disable the periodic clock-aligned emission (the
+      // dominant source of idle-time traffic) instead. Left otherwise untouched — no measurand
+      // list changes, no in-transaction sample-interval change — to keep this one-time
+      // correction minimal.
+      apply(reference, "ClockAlignedDataInterval", "0");
       return null;
     }
     apply(reference, "MeterValueSampleInterval", Integer.toString(sampleInterval));

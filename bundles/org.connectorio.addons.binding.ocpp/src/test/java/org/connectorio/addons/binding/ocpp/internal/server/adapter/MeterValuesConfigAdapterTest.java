@@ -19,15 +19,17 @@ package org.connectorio.addons.binding.ocpp.internal.server.adapter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 
 import eu.chargetime.ocpp.model.Confirmation;
 import eu.chargetime.ocpp.model.Request;
 import eu.chargetime.ocpp.model.core.BootNotificationRequest;
+import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -36,23 +38,33 @@ import org.connectorio.addons.binding.ocpp.internal.OcppSender;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
 import org.connectorio.addons.binding.ocpp.internal.server.OcppChargerSessionRegistry;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class MeterValuesConfigAdapterTest {
 
   @Test
-  void skipsTheMeterConfigBurstForAMeterlessCharger() {
+  void aMeterlessChargerOnlyGetsClockAlignedDataDisabled() {
     ChargerReference charx = new ChargerReference("charx");
     UUID session = UUID.randomUUID();
     OcppChargerSessionRegistry registry = mock(OcppChargerSessionRegistry.class);
     when(registry.getCharger(session)).thenReturn(charx);
     OcppSender sender = mock(OcppSender.class);
+    CompletionStage<Confirmation> pending = new CompletableFuture<>();
+    when(sender.sendAfter(any(ChargerReference.class), any(Request.class), anyLong())).thenReturn(pending);
 
     MeterValuesConfigAdapter adapter = new MeterValuesConfigAdapter(registry, sender, 30,
         "Energy.Active.Import.Register,Voltage", 30, Set.of("charx"));
 
     adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
 
-    verify(sender, never()).sendAfter(any(ChargerReference.class), any(Request.class), anyLong());
+    // Exactly one corrective ChangeConfiguration — disabling the periodic clock-aligned emission
+    // that would otherwise run forever from a previously-configured interval — nothing else.
+    verify(sender, times(1)).sendAfter(any(ChargerReference.class), any(Request.class), anyLong());
+    ArgumentCaptor<Request> captor = ArgumentCaptor.forClass(Request.class);
+    verify(sender).sendAfter(eq(charx), captor.capture(), anyLong());
+    ChangeConfigurationRequest request = (ChangeConfigurationRequest) captor.getValue();
+    assertThat(request.getKey()).isEqualTo("ClockAlignedDataInterval");
+    assertThat(request.getValue()).isEqualTo("0");
   }
 
   @Test
@@ -70,8 +82,7 @@ class MeterValuesConfigAdapterTest {
 
     adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
 
-    verify(sender, org.mockito.Mockito.times(4))
-        .sendAfter(any(ChargerReference.class), any(Request.class), anyLong());
+    verify(sender, times(4)).sendAfter(any(ChargerReference.class), any(Request.class), anyLong());
   }
 
   @Test
