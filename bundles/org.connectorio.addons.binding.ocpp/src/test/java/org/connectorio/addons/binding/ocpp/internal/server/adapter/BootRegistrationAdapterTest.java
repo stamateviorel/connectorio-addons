@@ -2,6 +2,8 @@ package org.connectorio.addons.binding.ocpp.internal.server.adapter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import eu.chargetime.ocpp.model.core.BootNotificationConfirmation;
+import eu.chargetime.ocpp.model.core.BootNotificationRequest;
 import java.util.Set;
 import java.util.UUID;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
@@ -57,5 +59,43 @@ class BootRegistrationAdapterTest {
 
     assertThat(registry.getSession(charx)).isEqualTo(session);
     assertThat(registry.getCharger(session)).isEqualTo(charx);
+  }
+
+  @Test
+  void bootNotificationUsesTheConfiguredDefaultInterval() {
+    BootRegistrationAdapter registry = new BootRegistrationAdapter(Set.of(), 300);
+    UUID session = UUID.randomUUID();
+    registry.registerSession(session, new ChargerReference("charx"));
+
+    BootNotificationConfirmation confirmation =
+        registry.handleBootNotificationRequest(session, new BootNotificationRequest());
+
+    assertThat(confirmation.getInterval()).isEqualTo(300);
+  }
+
+  @Test
+  void perChargerHeartbeatOverrideWinsOverTheDefault() {
+    BootRegistrationAdapter registry = new BootRegistrationAdapter(Set.of(), 60);
+    UUID charxSession = UUID.randomUUID();
+    UUID wallboxSession = UUID.randomUUID();
+    registry.registerSession(charxSession, new ChargerReference("charx"));
+    registry.registerSession(wallboxSession, new ChargerReference("wallbox"));
+
+    registry.setHeartbeatInterval("charx", 300);
+
+    assertThat(registry.handleBootNotificationRequest(charxSession, new BootNotificationRequest()).getInterval())
+        .isEqualTo(300);
+    assertThat(registry.handleBootNotificationRequest(wallboxSession, new BootNotificationRequest()).getInterval())
+        .isEqualTo(60);
+  }
+
+  @Test
+  void zeroOrNegativeDefaultFallsBackToSixty() {
+    BootRegistrationAdapter registry = new BootRegistrationAdapter(Set.of(), 0);
+    UUID session = UUID.randomUUID();
+    registry.registerSession(session, new ChargerReference("charx"));
+
+    assertThat(registry.handleBootNotificationRequest(session, new BootNotificationRequest()).getInterval())
+        .isEqualTo(60);
   }
 }

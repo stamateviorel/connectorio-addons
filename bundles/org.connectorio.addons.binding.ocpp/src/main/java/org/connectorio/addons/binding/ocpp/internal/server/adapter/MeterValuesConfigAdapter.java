@@ -23,7 +23,9 @@ import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationConfirmation;
 import eu.chargetime.ocpp.model.core.ConfigurationStatus;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.connectorio.addons.binding.ocpp.internal.OcppSender;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
@@ -48,20 +50,33 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
   private final int sampleInterval;
   private final String sampledData;
   private final int clockAlignedInterval;
+  private final Set<String> meterlessChargers;
 
   public MeterValuesConfigAdapter(OcppChargerSessionRegistry sessionRegistry, OcppSender sender,
       int sampleInterval, String sampledData, int clockAlignedInterval) {
+    this(sessionRegistry, sender, sampleInterval, sampledData, clockAlignedInterval, Collections.emptySet());
+  }
+
+  public MeterValuesConfigAdapter(OcppChargerSessionRegistry sessionRegistry, OcppSender sender,
+      int sampleInterval, String sampledData, int clockAlignedInterval, Set<String> meterlessChargers) {
     this.sessionRegistry = sessionRegistry;
     this.sender = sender;
     this.sampleInterval = sampleInterval;
     this.sampledData = sampledData;
     this.clockAlignedInterval = clockAlignedInterval;
+    this.meterlessChargers = meterlessChargers;
   }
 
   @Override
   public BootNotificationConfirmation handleBootNotificationRequest(UUID sessionIndex, BootNotificationRequest request) {
     ChargerReference reference = sessionRegistry.getCharger(sessionIndex);
     if (reference == null) {
+      return null;
+    }
+    if (meterlessChargers.contains(reference.getSerial())) {
+      // No internal meter — nothing meaningful to sample. Skip the ChangeConfiguration burst
+      // and the resulting periodic MeterValues traffic entirely rather than push settings that
+      // only ever produce NaN readings.
       return null;
     }
     if (!firstBootForConfig(reference)) {

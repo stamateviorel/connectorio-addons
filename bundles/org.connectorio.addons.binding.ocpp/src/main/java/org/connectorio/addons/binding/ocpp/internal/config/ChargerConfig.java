@@ -22,4 +22,12 @@ import org.connectorio.addons.binding.config.Configuration;
 public class ChargerConfig implements Configuration {
   public static final String DEFAULT_REMOTE_START_TAG = "openhab";
   public String remoteStartTag = DEFAULT_REMOTE_START_TAG;
+
+  /**
+   * Per-charger override of the BootNotificationConfirmation heartbeat interval, in seconds. Null
+   * (the default) means fall back to the server bridge's own {@code heartbeat} setting. Chargers
+   * whose own OCPP stack is known to be fragile under frequent Heartbeat traffic can be set higher
+   * than the site-wide default without affecting other chargers.
+   */
+  public Integer heartbeat;
 }

@@ -16,12 +16,31 @@ public class BootRegistrationAdapter extends CoreEventHandlerAdapter implements
 
   private final Map<UUID, ChargerReference> registrations = new ConcurrentHashMap<>();
 
+  /**
+   * Per-charger serial override of the heartbeat interval sent in BootNotificationConfirmation.
+   * Populated from each charger Thing's own {@code heartbeat} config (see ChargerConfig); falls
+   * back to {@link #defaultIntervalSeconds} for any charger without its own override.
+   */
+  private final Map<String, Integer> heartbeatIntervals = new ConcurrentHashMap<>();
+
   private final Set<String> identifiers;
+  private final int defaultIntervalSeconds;
 
   public BootRegistrationAdapter(Set<String> identifiers) {
-    this.identifiers = identifiers;
+    this(identifiers, 60);
   }
-  
+
+  public BootRegistrationAdapter(Set<String> identifiers, int defaultIntervalSeconds) {
+    this.identifiers = identifiers;
+    this.defaultIntervalSeconds = defaultIntervalSeconds > 0 ? defaultIntervalSeconds : 60;
+  }
+
+  public void setHeartbeatInterval(String serial, int seconds) {
+    if (serial != null && seconds > 0) {
+      heartbeatIntervals.put(serial, seconds);
+    }
+  }
+
   @Override
   public void registerSession(UUID session, ChargerReference chargerReference) {
       // A reconnecting charger arrives on a fresh session UUID while its previous
@@ -44,7 +63,10 @@ public class BootRegistrationAdapter extends CoreEventHandlerAdapter implements
     
     ChargerReference registered = registrations.get(sessionIndex);
     if (identifiers.isEmpty() || (registered != null && identifiers.contains(registered.getSerial()))) {
-      return new BootNotificationConfirmation(time, 60, RegistrationStatus.Accepted);
+      int interval = registered != null
+          ? heartbeatIntervals.getOrDefault(registered.getSerial(), defaultIntervalSeconds)
+          : defaultIntervalSeconds;
+      return new BootNotificationConfirmation(time, interval, RegistrationStatus.Accepted);
     }
 
     // keep charger connected, but not active

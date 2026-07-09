@@ -64,6 +64,7 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
   private NetworkAddressService networkAddressService;
   private OcppServer server;
   private ServerBridgeDispatcherAdapter bridgeHandler;
+  private BootRegistrationAdapter bootAdapter;
 
   public ServerBridgeHandler(Bridge bridge, NetworkAddressService networkAddressService) {
     super(bridge);
@@ -90,8 +91,10 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
 
     Set<String> chargers = set(config.chargers);
     Set<String> tags = set(config.tags);
+    Set<String> meterlessChargers = set(config.meterlessChargers);
+    int defaultHeartbeatSeconds = config.heartbeat > 0 ? config.heartbeat : 60;
 
-    BootRegistrationAdapter bootAdapter = new BootRegistrationAdapter(chargers);
+    bootAdapter = new BootRegistrationAdapter(chargers, defaultHeartbeatSeconds);
     bridgeHandler = new ServerBridgeDispatcherAdapter(bootAdapter);
     Deque<ServerCoreEventHandler> eventHandlers = new ConcurrentLinkedDeque<>();
     // 2nd adapter
@@ -107,7 +110,8 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
       config.pingInterval
     );
     eventHandlers.addFirst(new MeterValuesConfigAdapter(bootAdapter, server,
-      config.meterValueSampleInterval, config.meterValuesData, config.clockAlignedDataInterval));
+      config.meterValueSampleInterval, config.meterValuesData, config.clockAlignedDataInterval,
+      meterlessChargers));
     if (config.disableRemoteTxAuthorization) {
       eventHandlers.addFirst(new RemoteAuthorizationConfigAdapter(bootAdapter, server));
     }
@@ -140,9 +144,8 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     if (server != null) {
       server.close();
     }
-    if (bridgeHandler != null) {
-      bridgeHandler = null;
-    }
+    bridgeHandler = null;
+    bootAdapter = null;
   }
 
   private Set<String> set(List<String> config) {
@@ -165,6 +168,12 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     Object serial = childThing.getConfiguration().get(Thing.PROPERTY_SERIAL_NUMBER);
     if (serial instanceof String && bridgeHandler != null && childHandler instanceof ChargerThingHandler) {
       bridgeHandler.addHandler(new ChargerReference((String) serial), (ChargerThingHandler) childHandler);
+      if (bootAdapter != null) {
+        Object heartbeatOverride = childThing.getConfiguration().get("heartbeat");
+        if (heartbeatOverride instanceof Number) {
+          bootAdapter.setHeartbeatInterval((String) serial, ((Number) heartbeatOverride).intValue());
+        }
+      }
     }
   }
 

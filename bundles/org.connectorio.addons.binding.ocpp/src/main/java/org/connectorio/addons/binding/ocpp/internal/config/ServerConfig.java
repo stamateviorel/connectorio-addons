@@ -36,4 +36,13 @@ public class ServerConfig implements Configuration {
 
   public List<String> chargers;
   public List<String> tags;
+
+  /**
+   * Serials of chargers with no internal energy meter. MeterValueSampleInterval,
+   * MeterValuesSampledData, MeterValuesAlignedData and ClockAlignedDataInterval are not pushed to
+   * these chargers on BootNotification — there is nothing meaningful for them to sample, and the
+   * ChangeConfiguration burst plus the resulting periodic MeterValues traffic is pure overhead on
+   * chargers whose OCPP stack may have limited capacity to spare (see Phoenix Contact CHARX).
+   */
+  public List<String> meterlessChargers;
 }
