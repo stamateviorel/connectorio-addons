@@ -17,10 +17,13 @@
  */
 package org.connectorio.addons.binding.ocpp.internal.server.adapter;
 
+import eu.chargetime.ocpp.model.Confirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationConfirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationRequest;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
+import java.util.Collections;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import org.connectorio.addons.binding.ocpp.internal.OcppSender;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
 import org.connectorio.addons.binding.ocpp.internal.server.OcppChargerSessionRegistry;
@@ -41,20 +44,15 @@ public class RemoteAuthorizationConfigAdapter extends CoreEventHandlerAdapter {
   @Override
   public BootNotificationConfirmation handleBootNotificationRequest(UUID sessionIndex, BootNotificationRequest request) {
     ChargerReference reference = sessionRegistry.getCharger(sessionIndex);
-    if (reference == null) {
-      return null;
-    }
-    if (!firstBootForConfig(reference)) {
-      return null;
-    }
-    sender.sendAfter(reference, new ChangeConfigurationRequest("AuthorizeRemoteTxRequests", "false"), CONFIG_SETTLE_SECONDS)
-        .whenComplete((confirmation, ex) -> {
-      if (ex != null) {
-        logger.warn("ChangeConfiguration[AuthorizeRemoteTxRequests=false] for {} failed: {}", reference, ex.getMessage());
-      } else {
-        logger.debug("ChangeConfiguration[AuthorizeRemoteTxRequests=false] for {}: {}", reference, confirmation);
-      }
-    });
+    runBootConfigBurst(reference, () -> Collections.singletonList(
+        sender.sendAfter(reference, new ChangeConfigurationRequest("AuthorizeRemoteTxRequests", "false"), settleSecondsFor(reference))
+            .whenComplete((confirmation, ex) -> {
+              if (ex != null) {
+                logger.warn("ChangeConfiguration[AuthorizeRemoteTxRequests=false] for {} failed: {}", reference, ex.getMessage());
+              } else {
+                logger.debug("ChangeConfiguration[AuthorizeRemoteTxRequests=false] for {}: {}", reference, confirmation);
+              }
+            })));
     return null;
   }
 }

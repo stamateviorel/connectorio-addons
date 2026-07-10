@@ -155,6 +155,18 @@
         <default>10</default>
         <unitLabel>s</unitLabel>
       </parameter>
+      <parameter name="configSettleSeconds" type="integer" required="false" min="1">
+        <label>Config settle delay</label>
+        <description>
+          Seconds to wait after BootNotification before pushing the boot-time ChangeConfiguration
+          burst. Leave unset to use the site-wide default (10s). Raise for chargers whose own
+          config agent is slow to come up after a reboot — otherwise the first queued
+          ChangeConfiguration times out before the charger is ready to answer, closing the session
+          and dropping the whole burst (observed on Phoenix Contact CHARX after a controller
+          restart).
+        </description>
+        <unitLabel>s</unitLabel>
+      </parameter>
     </config-description>
   </bridge-type>
 

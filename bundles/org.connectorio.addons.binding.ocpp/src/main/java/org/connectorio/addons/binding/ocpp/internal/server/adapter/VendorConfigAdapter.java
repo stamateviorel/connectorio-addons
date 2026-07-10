@@ -17,12 +17,15 @@
  */
 package org.connectorio.addons.binding.ocpp.internal.server.adapter;
 
+import eu.chargetime.ocpp.model.Confirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationConfirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationRequest;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 import org.connectorio.addons.binding.ocpp.internal.OcppSender;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
 import org.connectorio.addons.binding.ocpp.internal.server.OcppChargerSessionRegistry;
@@ -49,20 +52,18 @@ public class VendorConfigAdapter extends CoreEventHandlerAdapter {
       return null;
     }
     ChargerReference reference = sessionRegistry.getCharger(sessionIndex);
-    if (reference == null) {
-      return null;
-    }
-    if (!firstBootForConfig(reference)) {
-      return null;
-    }
-    for (Map.Entry<String, String> entry : vendorKeys.entrySet()) {
-      apply(reference, entry.getKey(), entry.getValue());
-    }
+    runBootConfigBurst(reference, () -> {
+      List<CompletionStage<Confirmation>> stages = new ArrayList<>();
+      for (Map.Entry<String, String> entry : vendorKeys.entrySet()) {
+        stages.add(apply(reference, entry.getKey(), entry.getValue()));
+      }
+      return stages;
+    });
     return null;
   }
 
-  private void apply(ChargerReference reference, String key, String value) {
-    sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), CONFIG_SETTLE_SECONDS)
+  private CompletionStage<Confirmation> apply(ChargerReference reference, String key, String value) {
+    return sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), settleSecondsFor(reference))
         .whenComplete((confirmation, ex) -> {
       if (ex != null) {
         logger.warn("ChangeConfiguration[{}={}] for {} failed: {}", key, value, reference, ex.getMessage());

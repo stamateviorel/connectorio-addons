@@ -29,7 +29,11 @@ import static org.mockito.ArgumentMatchers.eq;
 import eu.chargetime.ocpp.model.Confirmation;
 import eu.chargetime.ocpp.model.Request;
 import eu.chargetime.ocpp.model.core.BootNotificationRequest;
+import eu.chargetime.ocpp.model.core.ChangeConfigurationConfirmation;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
+import eu.chargetime.ocpp.model.core.ConfigurationStatus;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -83,6 +87,79 @@ class MeterValuesConfigAdapterTest {
     adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
 
     verify(sender, times(4)).sendAfter(any(ChargerReference.class), any(Request.class), anyLong());
+  }
+
+  @Test
+  void aFailedBootConfigAttemptRetriesOnTheNextGenuineBootNotification() {
+    ChargerReference charx = new ChargerReference("charx");
+    UUID session = UUID.randomUUID();
+    OcppChargerSessionRegistry registry = mock(OcppChargerSessionRegistry.class);
+    when(registry.getCharger(session)).thenReturn(charx);
+    OcppSender sender = mock(OcppSender.class);
+    List<CompletableFuture<Confirmation>> issued = new ArrayList<>();
+    when(sender.sendAfter(any(ChargerReference.class), any(Request.class), anyLong())).thenAnswer(invocation -> {
+      CompletableFuture<Confirmation> future = new CompletableFuture<>();
+      issued.add(future);
+      return future;
+    });
+
+    MeterValuesConfigAdapter adapter = new MeterValuesConfigAdapter(registry, sender, 30,
+        "Energy.Active.Import.Register,Voltage", 30, Set.of("charx"));
+
+    adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
+    assertThat(issued).hasSize(1);
+    // The one queued CALL times out (session closed) — matches SessionSender's real failure mode.
+    issued.get(0).completeExceptionally(new RuntimeException("timed out"));
+
+    // A charger that never got configured must retry on its next genuine reboot, not stay burned
+    // forever — this is the fix for the bug caught live: CHARX's boot-config burst timed out and
+    // the one-shot gate used to swallow the correction permanently.
+    adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
+    assertThat(issued).hasSize(2);
+  }
+
+  @Test
+  void aSuccessfulBootConfigAttemptDoesNotRetryOnTheNextBootNotification() {
+    ChargerReference charx = new ChargerReference("charx");
+    UUID session = UUID.randomUUID();
+    OcppChargerSessionRegistry registry = mock(OcppChargerSessionRegistry.class);
+    when(registry.getCharger(session)).thenReturn(charx);
+    OcppSender sender = mock(OcppSender.class);
+    List<CompletableFuture<Confirmation>> issued = new ArrayList<>();
+    when(sender.sendAfter(any(ChargerReference.class), any(Request.class), anyLong())).thenAnswer(invocation -> {
+      CompletableFuture<Confirmation> future = new CompletableFuture<>();
+      issued.add(future);
+      return future;
+    });
+
+    MeterValuesConfigAdapter adapter = new MeterValuesConfigAdapter(registry, sender, 30,
+        "Energy.Active.Import.Register,Voltage", 30, Set.of("charx"));
+
+    adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
+    assertThat(issued).hasSize(1);
+    issued.get(0).complete(new ChangeConfigurationConfirmation(ConfigurationStatus.Accepted));
+
+    adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
+    assertThat(issued).hasSize(1); // already configured — no retry
+  }
+
+  @Test
+  void perChargerSettleSecondsOverrideIsPassedToSendAfter() {
+    ChargerReference charx = new ChargerReference("charx");
+    UUID session = UUID.randomUUID();
+    OcppChargerSessionRegistry registry = mock(OcppChargerSessionRegistry.class);
+    when(registry.getCharger(session)).thenReturn(charx);
+    OcppSender sender = mock(OcppSender.class);
+    CompletionStage<Confirmation> pending = new CompletableFuture<>();
+    when(sender.sendAfter(any(ChargerReference.class), any(Request.class), anyLong())).thenReturn(pending);
+
+    MeterValuesConfigAdapter adapter = new MeterValuesConfigAdapter(registry, sender, 30,
+        "Energy.Active.Import.Register,Voltage", 30, Set.of("charx"));
+    adapter.setConfigSettleSeconds("charx", 45);
+
+    adapter.handleBootNotificationRequest(session, new BootNotificationRequest());
+
+    verify(sender).sendAfter(eq(charx), any(Request.class), eq(45L));
   }
 
   @Test

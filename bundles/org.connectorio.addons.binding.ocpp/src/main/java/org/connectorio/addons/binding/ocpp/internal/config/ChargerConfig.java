@@ -30,4 +30,14 @@ public class ChargerConfig implements Configuration {
    * than the site-wide default without affecting other chargers.
    */
   public Integer heartbeat;
+
+  /**
+   * Per-charger override (seconds) of how long to wait after BootNotification before firing the
+   * boot-time ChangeConfiguration burst. Null falls back to the adapters' own default (10 s).
+   * Chargers whose internal OCPP/config agents take longer to come up after a reboot need this
+   * raised, or the first queued ChangeConfiguration times out before the charger is ready to
+   * answer, closing the session and dropping the whole burst as collateral (see Phoenix Contact
+   * CHARX, which is not ready at the 10 s default following a controller restart).
+   */
+  public Integer configSettleSeconds;
 }

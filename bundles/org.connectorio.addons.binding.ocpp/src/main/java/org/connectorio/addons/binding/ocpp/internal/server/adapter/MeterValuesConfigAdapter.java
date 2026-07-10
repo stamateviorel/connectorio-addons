@@ -17,16 +17,20 @@
  */
 package org.connectorio.addons.binding.ocpp.internal.server.adapter;
 
+import eu.chargetime.ocpp.model.Confirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationConfirmation;
 import eu.chargetime.ocpp.model.core.BootNotificationRequest;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationRequest;
 import eu.chargetime.ocpp.model.core.ChangeConfigurationConfirmation;
 import eu.chargetime.ocpp.model.core.ConfigurationStatus;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import org.connectorio.addons.binding.ocpp.internal.OcppSender;
 import org.connectorio.addons.binding.ocpp.internal.server.ChargerReference;
 import org.connectorio.addons.binding.ocpp.internal.server.OcppChargerSessionRegistry;
@@ -70,35 +74,41 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
   @Override
   public BootNotificationConfirmation handleBootNotificationRequest(UUID sessionIndex, BootNotificationRequest request) {
     ChargerReference reference = sessionRegistry.getCharger(sessionIndex);
-    if (reference == null) {
-      return null;
-    }
-    if (!firstBootForConfig(reference)) {
-      return null;
-    }
-    if (meterlessChargers.contains(reference.getSerial())) {
-      // No internal meter — nothing meaningful to sample. ChangeConfiguration values persist on
-      // the charger, so merely skipping our usual push would leave a previously-configured
-      // interval running forever; explicitly disable the periodic clock-aligned emission (the
-      // dominant source of idle-time traffic) instead. Left otherwise untouched — no measurand
-      // list changes, no in-transaction sample-interval change — to keep this one-time
-      // correction minimal.
-      apply(reference, "ClockAlignedDataInterval", "0");
-      return null;
-    }
-    apply(reference, "MeterValueSampleInterval", Integer.toString(sampleInterval));
-    apply(reference, "MeterValuesSampledData", sampledData);
-    apply(reference, "MeterValuesAlignedData", sampledData);
-    apply(reference, "ClockAlignedDataInterval", Integer.toString(clockAlignedInterval));
+    runBootConfigBurst(reference, () -> {
+      List<CompletionStage<Confirmation>> stages = new ArrayList<>();
+      if (meterlessChargers.contains(reference.getSerial())) {
+        // No internal meter — nothing meaningful to sample. ChangeConfiguration values persist on
+        // the charger, so merely skipping our usual push would leave a previously-configured
+        // interval running forever; explicitly disable the periodic clock-aligned emission (the
+        // dominant source of idle-time traffic) instead. Left otherwise untouched — no measurand
+        // list changes, no in-transaction sample-interval change — to keep this one-time
+        // correction minimal.
+        stages.add(apply(reference, "ClockAlignedDataInterval", "0"));
+        return stages;
+      }
+      stages.add(apply(reference, "MeterValueSampleInterval", Integer.toString(sampleInterval)));
+      stages.add(apply(reference, "MeterValuesSampledData", sampledData));
+      stages.add(apply(reference, "MeterValuesAlignedData", sampledData));
+      stages.add(apply(reference, "ClockAlignedDataInterval", Integer.toString(clockAlignedInterval)));
+      return stages;
+    });
     return null;
   }
 
-  private void apply(ChargerReference reference, String key, String value) {
+  private CompletionStage<Confirmation> apply(ChargerReference reference, String key, String value) {
+    CompletableFuture<Confirmation> result = new CompletableFuture<>();
+    applyInternal(reference, key, value, result);
+    return result;
+  }
+
+  private void applyInternal(ChargerReference reference, String key, String value,
+      CompletableFuture<Confirmation> result) {
     boolean isMeterMeasurandKey = "MeterValuesSampledData".equals(key) || "MeterValuesAlignedData".equals(key);
-    sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), CONFIG_SETTLE_SECONDS)
+    sender.sendAfter(reference, new ChangeConfigurationRequest(key, value), settleSecondsFor(reference))
         .whenComplete((confirmation, ex) -> {
       if (ex != null) {
         logger.warn("ChangeConfiguration[{}] for {} failed: {}", key, reference, ex.getMessage());
+        result.completeExceptionally(ex);
         return;
       }
       if (isMeterMeasurandKey && confirmation instanceof ChangeConfigurationConfirmation
@@ -106,11 +116,12 @@ public class MeterValuesConfigAdapter extends CoreEventHandlerAdapter {
         String stripped = stripFirstFragile(value);
         if (!stripped.equals(value) && !stripped.isEmpty()) {
           logger.info("Charger {} rejected ChangeConfiguration[{}={}] — retrying as {}", reference, key, value, stripped);
-          apply(reference, key, stripped);
+          applyInternal(reference, key, stripped, result);
           return;
         }
       }
       logger.debug("ChangeConfiguration[{}={}] for {}: {}", key, value, reference, confirmation);
+      result.complete(confirmation);
     });
   }
 

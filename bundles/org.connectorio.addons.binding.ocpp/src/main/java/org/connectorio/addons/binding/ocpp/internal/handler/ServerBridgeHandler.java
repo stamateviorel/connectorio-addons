@@ -65,6 +65,9 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
   private OcppServer server;
   private ServerBridgeDispatcherAdapter bridgeHandler;
   private BootRegistrationAdapter bootAdapter;
+  private VendorConfigAdapter vendorConfigAdapter;
+  private MeterValuesConfigAdapter meterValuesConfigAdapter;
+  private RemoteAuthorizationConfigAdapter remoteAuthorizationConfigAdapter;
 
   public ServerBridgeHandler(Bridge bridge, NetworkAddressService networkAddressService) {
     super(bridge);
@@ -109,13 +112,16 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
       new OcularSolarEcoMode(config.initialOcularEcoMode),
       config.pingInterval
     );
-    eventHandlers.addFirst(new MeterValuesConfigAdapter(bootAdapter, server,
+    meterValuesConfigAdapter = new MeterValuesConfigAdapter(bootAdapter, server,
       config.meterValueSampleInterval, config.meterValuesData, config.clockAlignedDataInterval,
-      meterlessChargers));
+      meterlessChargers);
+    eventHandlers.addFirst(meterValuesConfigAdapter);
     if (config.disableRemoteTxAuthorization) {
-      eventHandlers.addFirst(new RemoteAuthorizationConfigAdapter(bootAdapter, server));
+      remoteAuthorizationConfigAdapter = new RemoteAuthorizationConfigAdapter(bootAdapter, server);
+      eventHandlers.addFirst(remoteAuthorizationConfigAdapter);
     }
-    eventHandlers.addFirst(new VendorConfigAdapter(bootAdapter, server, VendorConfigAdapter.parse(config.vendorConfig)));
+    vendorConfigAdapter = new VendorConfigAdapter(bootAdapter, server, VendorConfigAdapter.parse(config.vendorConfig));
+    eventHandlers.addFirst(vendorConfigAdapter);
     server.activate();
     reattachAlreadyInitializedChargers();
     updateStatus(ThingStatus.ONLINE);
@@ -146,6 +152,9 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     }
     bridgeHandler = null;
     bootAdapter = null;
+    vendorConfigAdapter = null;
+    meterValuesConfigAdapter = null;
+    remoteAuthorizationConfigAdapter = null;
   }
 
   private Set<String> set(List<String> config) {
@@ -172,6 +181,19 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
         Object heartbeatOverride = childThing.getConfiguration().get("heartbeat");
         if (heartbeatOverride instanceof Number) {
           bootAdapter.setHeartbeatInterval((String) serial, ((Number) heartbeatOverride).intValue());
+        }
+      }
+      Object settleOverride = childThing.getConfiguration().get("configSettleSeconds");
+      if (settleOverride instanceof Number) {
+        long seconds = ((Number) settleOverride).longValue();
+        if (vendorConfigAdapter != null) {
+          vendorConfigAdapter.setConfigSettleSeconds((String) serial, seconds);
+        }
+        if (meterValuesConfigAdapter != null) {
+          meterValuesConfigAdapter.setConfigSettleSeconds((String) serial, seconds);
+        }
+        if (remoteAuthorizationConfigAdapter != null) {
+          remoteAuthorizationConfigAdapter.setConfigSettleSeconds((String) serial, seconds);
         }
       }
     }
