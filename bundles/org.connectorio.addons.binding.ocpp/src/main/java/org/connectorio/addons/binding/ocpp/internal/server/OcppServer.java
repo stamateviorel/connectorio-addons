@@ -112,20 +112,38 @@ public class OcppServer implements OcppSender {
    * after a stuck-Finishing + UnlockConnector cycle) keeps ponging while sending no heartbeat, status
    * or meter values, and ignores every CSMS CALL. The transport never drops, so {@code lostSession}
    * never fires and the connector status stays frozen forever. We track the last inbound OCPP message
-   * per session; if one stays silent past {@link #STALE_SESSION_TIMEOUT_SECONDS} (well over the 60 s
-   * negotiated heartbeat — see {@code BootRegistrationAdapter}), we force-close it so the charger
-   * reconnects with a fresh session and re-syncs state. The Modbus current/release path is unaffected.
+   * per session; if one stays silent past its charger's threshold (see {@link #staleThresholdMs}),
+   * we force-close it so the charger reconnects with a fresh session and re-syncs state. The
+   * threshold is derived from each charger's own negotiated heartbeat interval: an idle charger's
+   * only periodic OCPP message IS the heartbeat, so a fixed threshold below the interval reaps
+   * perfectly healthy sessions in a loop. Bitten live 2026-07-09/10: raising CHARX's heartbeat to
+   * 300 s while this floor sat at a fixed 180 s force-cycled its idle session every ~5 minutes for
+   * 19 hours straight. The Modbus current/release path is unaffected.
    */
   private static final long STALE_SESSION_TIMEOUT_SECONDS = 180;
   private static final long LIVENESS_CHECK_INTERVAL_SECONDS = 60;
   private final Map<UUID, Long> lastInboundAt = new ConcurrentHashMap<>();
 
+  /**
+   * Per-charger negotiated heartbeat interval (seconds), keyed by serial — the value the charger
+   * was given in its BootNotificationConfirmation. Null-safe: unknown serials fall back to the
+   * fixed default threshold.
+   */
+  private final java.util.function.ToIntFunction<String> negotiatedHeartbeatSeconds;
+
   public OcppServer(String ip, int port, OcppChargerSessionRegistry chargerSessionRegistry,
       Deque<ServerCoreEventHandler> eventHandlers, OcularSolarEcoMode ocularSolarEcoMode,
       int pingIntervalSec) {
+    this(ip, port, chargerSessionRegistry, eventHandlers, ocularSolarEcoMode, pingIntervalSec, null);
+  }
+
+  public OcppServer(String ip, int port, OcppChargerSessionRegistry chargerSessionRegistry,
+      Deque<ServerCoreEventHandler> eventHandlers, OcularSolarEcoMode ocularSolarEcoMode,
+      int pingIntervalSec, java.util.function.ToIntFunction<String> negotiatedHeartbeatSeconds) {
     this.ip = ip;
     this.port = port;
     this.chargerSessionRegistry = chargerSessionRegistry;
+    this.negotiatedHeartbeatSeconds = negotiatedHeartbeatSeconds;
     this.ocularSolarEcoMode = ocularSolarEcoMode;
     ocularSolarEcoMode.setOcppSender(this);
 
@@ -230,16 +248,21 @@ public class OcppServer implements OcppSender {
   private void reapStaleSessions() {
     try {
       long now = System.currentTimeMillis();
-      long thresholdMs = STALE_SESSION_TIMEOUT_SECONDS * 1000L;
       for (Map.Entry<UUID, Long> entry : lastInboundAt.entrySet()) {
+        UUID sessionIndex = entry.getKey();
+        ChargerReference charger = chargerSessionRegistry.getCharger(sessionIndex);
+        Integer heartbeat = null;
+        if (negotiatedHeartbeatSeconds != null && charger != null && charger.getSerial() != null) {
+          heartbeat = negotiatedHeartbeatSeconds.applyAsInt(charger.getSerial());
+        }
+        long thresholdMs = staleThresholdMs(heartbeat);
         long idleMs = now - entry.getValue();
         if (idleMs <= thresholdMs) {
           continue;
         }
-        UUID sessionIndex = entry.getKey();
-        logger.warn("Charger {} OCPP session {} silent for {}s (no heartbeat/message while transport stayed up) "
-            + "— force-closing so it reconnects.", chargerSessionRegistry.getCharger(sessionIndex), sessionIndex,
-            idleMs / 1000);
+        logger.warn("Charger {} OCPP session {} silent for {}s (threshold {}s; no heartbeat/message while "
+            + "transport stayed up) — force-closing so it reconnects.", charger, sessionIndex,
+            idleMs / 1000, thresholdMs / 1000);
         lastInboundAt.remove(sessionIndex);
         try {
           server.closeSession(sessionIndex);
@@ -250,6 +273,20 @@ public class OcppServer implements OcppSender {
     } catch (RuntimeException e) {
       logger.warn("Liveness watchdog sweep failed", e);
     }
+  }
+
+  /**
+   * Silence threshold before a session is considered dead: two consecutive missed heartbeats plus
+   * a sweep-granularity margin, but never below the fixed floor. An idle charger's only periodic
+   * OCPP message is its heartbeat, so the threshold MUST exceed the negotiated interval — with
+   * margin for one lost message — or healthy idle sessions get force-cycled at heartbeat cadence.
+   */
+  static long staleThresholdMs(Integer negotiatedHeartbeatSeconds) {
+    if (negotiatedHeartbeatSeconds == null || negotiatedHeartbeatSeconds <= 0) {
+      return STALE_SESSION_TIMEOUT_SECONDS * 1000L;
+    }
+    long derived = 2L * negotiatedHeartbeatSeconds + LIVENESS_CHECK_INTERVAL_SECONDS;
+    return Math.max(STALE_SESSION_TIMEOUT_SECONDS, derived) * 1000L;
   }
 
   @Override

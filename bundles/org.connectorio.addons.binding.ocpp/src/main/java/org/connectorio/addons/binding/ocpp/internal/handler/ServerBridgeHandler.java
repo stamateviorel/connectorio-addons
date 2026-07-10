@@ -121,7 +121,10 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     server = new OcppServer(
       address, config.port, bootAdapter, eventHandlers,
       new OcularSolarEcoMode(config.initialOcularEcoMode),
-      config.pingInterval
+      config.pingInterval,
+      // liveness threshold per charger tracks its negotiated heartbeat — a charger heartbeating
+      // every 300s must not be reaped by a fixed 180s silence floor (live incident 2026-07-09/10)
+      bootAdapter::effectiveHeartbeatSeconds
     );
     meterValuesConfigAdapter = new MeterValuesConfigAdapter(bootAdapter, server,
       config.meterValueSampleInterval, config.meterValuesData, config.clockAlignedDataInterval,

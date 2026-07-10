@@ -98,4 +98,15 @@ class BootRegistrationAdapterTest {
     assertThat(registry.handleBootNotificationRequest(session, new BootNotificationRequest()).getInterval())
         .isEqualTo(60);
   }
+
+  @Test
+  void effectiveHeartbeatSecondsExposesTheNegotiatedIntervalToTheLivenessWatchdog() {
+    BootRegistrationAdapter registry = new BootRegistrationAdapter(Set.of(), 60);
+    registry.setHeartbeatInterval("charx", 300);
+
+    // must return the same value the charger got in its BootNotificationConfirmation
+    assertThat(registry.effectiveHeartbeatSeconds("charx")).isEqualTo(300);
+    assertThat(registry.effectiveHeartbeatSeconds("wallbox")).isEqualTo(60);
+    assertThat(registry.effectiveHeartbeatSeconds(null)).isEqualTo(60);
+  }
 }

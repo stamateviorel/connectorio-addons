@@ -41,6 +41,19 @@ public class BootRegistrationAdapter extends CoreEventHandlerAdapter implements
     }
   }
 
+  /**
+   * The heartbeat interval this charger was (or will be) given in its BootNotificationConfirmation
+   * — per-charger override if set, otherwise the server default. The liveness watchdog derives its
+   * per-charger silence threshold from this: a charger legitimately heartbeating every N seconds
+   * must not be reaped for being silent shorter than that.
+   */
+  public int effectiveHeartbeatSeconds(String serial) {
+    if (serial == null) {
+      return defaultIntervalSeconds;
+    }
+    return heartbeatIntervals.getOrDefault(serial, defaultIntervalSeconds);
+  }
+
   @Override
   public void registerSession(UUID session, ChargerReference chargerReference) {
       // A reconnecting charger arrives on a fresh session UUID while its previous
