@@ -61,6 +61,13 @@ public class OcppMeasurementMapping {
   private final static Pattern PHASE_SUFFIX = Pattern.compile("\\.(L[1-3])$");
 
   /**
+   * Measurand assumed when a SampledValue omits it — per the OCPP 1.6 SampledValue field table,
+   * an absent measurand means Energy.Active.Import.Register. Minimal chargers send exactly this
+   * shape; dropping such samples loses the primary energy reading.
+   */
+  private static final String DEFAULT_MEASURAND = "Energy.Active.Import.Register";
+
+  /**
    * Resolve every channel that should receive an update for a given
    * SampledValue. The caller doesn't need to know about phase strings or
    * vendor quirks — this method is the single point of decision.
@@ -77,10 +84,14 @@ public class OcppMeasurementMapping {
    * </ul>
    */
   public static List<UID> channelsFor(SampledValue sample) {
-    if (sample == null || sample.getMeasurand() == null) {
+    if (sample == null) {
       return List.of();
     }
-    String base = stripPhaseSuffix(sample.getMeasurand());
+    String measurand = sample.getMeasurand();
+    if (measurand == null || measurand.isEmpty()) {
+      measurand = DEFAULT_MEASURAND;
+    }
+    String base = stripPhaseSuffix(measurand);
     List<UID> channels = new ArrayList<>(2);
 
     ChannelRef aggregate = MAPPING.get(base);
@@ -88,7 +99,7 @@ public class OcppMeasurementMapping {
       channels.add(aggregate);
     }
 
-    String phase = resolvePhase(sample);
+    String phase = resolvePhase(sample, measurand);
     if (phase != null) {
       Map<String, ChannelRef> perPhase = PER_PHASE.get(base);
       if (perPhase != null) {
@@ -111,7 +122,7 @@ public class OcppMeasurementMapping {
     return MAPPING.get(stripPhaseSuffix(measurement));
   }
 
-  private static String resolvePhase(SampledValue sample) {
+  private static String resolvePhase(SampledValue sample, String measurand) {
     // Standard form: phase field set, possibly with line-neutral suffix like "L1-N".
     String phase = sample.getPhase();
     if (phase != null && phase.length() >= 2) {
@@ -121,7 +132,7 @@ public class OcppMeasurementMapping {
       }
     }
     // Vendor-suffix form: phase encoded in the measurand name itself.
-    Matcher m = PHASE_SUFFIX.matcher(sample.getMeasurand());
+    Matcher m = PHASE_SUFFIX.matcher(measurand);
     return m.find() ? m.group(1) : null;
   }
 

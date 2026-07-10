@@ -102,10 +102,20 @@ class OcppMeasurementMappingTest {
   }
 
   @Test
-  void channelsForReturnsEmptyForUnknownOrNull() {
+  void channelsForReturnsEmptyForUnknownOrNullSample() {
     assertThat(OcppMeasurementMapping.channelsFor(sample("NotAMeasurand", null))).isEmpty();
     assertThat(OcppMeasurementMapping.channelsFor(null)).isEmpty();
-    assertThat(OcppMeasurementMapping.channelsFor(sample(null, null))).isEmpty();
+  }
+
+  @Test
+  void channelsForDefaultsAnOmittedMeasurandToEnergyActiveImport() {
+    // Per the OCPP 1.6 SampledValue table an absent measurand means Energy.Active.Import.Register —
+    // minimal chargers send exactly this shape, and dropping it loses the primary energy reading.
+    assertThat(OcppMeasurementMapping.channelsFor(sample(null, null)))
+        .containsExactly(OcppBindingConstants.ENERGY_ACTIVE_IMPORT);
+    // A phase field alongside an omitted measurand must not trip the vendor-suffix matcher.
+    assertThat(OcppMeasurementMapping.channelsFor(sample(null, "L1")))
+        .containsExactly(OcppBindingConstants.ENERGY_ACTIVE_IMPORT);
   }
 
   @Test

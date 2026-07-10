@@ -21,6 +21,16 @@ import org.slf4j.LoggerFactory;
 public class ChargeLimitCommandHandler {
     private final Logger logger = LoggerFactory.getLogger(ChargeLimitCommandHandler.class);
 
+    /**
+     * chargingProfileId is the charge point's replace-key for SetChargingProfile. One id per
+     * purpose: reusing a single id while flipping purpose between TxDefaultProfile and TxProfile
+     * asks the charger to mutate a profile's purpose in place, which the spec never defines and a
+     * strict firmware may reject. TxDefaultProfile keeps the historical id 1 so chargers holding a
+     * persisted default profile (Phoenix CHARX, forceTxDefaultProfile) keep replacing the same one.
+     */
+    private static final int TX_DEFAULT_PROFILE_ID = 1;
+    private static final int TX_PROFILE_ID = 2;
+
     // One coalescer per handler instance — handlers are created per connector.
     private SetChargingProfileCoalescer coalescer;
 
@@ -97,7 +107,6 @@ public class ChargeLimitCommandHandler {
         );
 
         ChargingProfile profile = new ChargingProfile();
-        profile.setChargingProfileId(1);
         profile.setStackLevel(0);
         profile.setChargingProfileKind(ChargingProfileKindType.Relative);
         profile.setChargingSchedule(schedule);
@@ -117,9 +126,11 @@ public class ChargeLimitCommandHandler {
         Integer transactionId = context.getCurrentTransactionId();
         if (transactionId != null && !context.isForceTxDefaultProfile()) {
             profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxProfile);
+            profile.setChargingProfileId(TX_PROFILE_ID);
             profile.setTransactionId(transactionId);
         } else {
             profile.setChargingProfilePurpose(ChargingProfilePurposeType.TxDefaultProfile);
+            profile.setChargingProfileId(TX_DEFAULT_PROFILE_ID);
         }
 
         SetChargingProfileRequest setProfileRequest = new SetChargingProfileRequest(context.getConnectorId(), profile);

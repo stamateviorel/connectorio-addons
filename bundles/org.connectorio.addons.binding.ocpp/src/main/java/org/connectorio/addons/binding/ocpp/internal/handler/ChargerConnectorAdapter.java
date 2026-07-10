@@ -1,6 +1,8 @@
 package org.connectorio.addons.binding.ocpp.internal.handler;
 
 import eu.chargetime.ocpp.model.Request;
+import eu.chargetime.ocpp.model.core.AuthorizationStatus;
+import eu.chargetime.ocpp.model.core.IdTagInfo;
 import eu.chargetime.ocpp.model.core.MeterValuesConfirmation;
 import eu.chargetime.ocpp.model.core.MeterValuesRequest;
 import eu.chargetime.ocpp.model.core.StartTransactionConfirmation;
@@ -14,6 +16,7 @@ import java.util.Map.Entry;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import org.connectorio.addons.binding.ocpp.internal.OcppRequestListener;
 import org.connectorio.addons.binding.ocpp.internal.server.listener.MeterValuesHandler;
 import org.connectorio.addons.binding.ocpp.internal.server.listener.StatusNotificationHandler;
@@ -28,9 +31,18 @@ public class ChargerConnectorAdapter implements StatusNotificationHandler, Meter
   // StopTransaction carries no connectorId, so the id is the only key back to the right connector.
   private final AtomicInteger transactionSequence = new AtomicInteger(1);
   private final OcppRequestListener<Request> listener;
+  // idTag policy for StartTransaction.req, wired from the server bridge's `tags` whitelist.
+  // Default accepts everything — matches an empty whitelist and standalone/test construction.
+  private volatile Predicate<String> tagValidator = tag -> true;
 
   public ChargerConnectorAdapter(OcppRequestListener<Request> listener) {
     this.listener = listener;
+  }
+
+  public void setTagValidator(Predicate<String> tagValidator) {
+    if (tagValidator != null) {
+      this.tagValidator = tagValidator;
+    }
   }
 
   public void addConnector(int connector, ConnectorThingHandler handler) {
@@ -77,6 +89,27 @@ public class ChargerConnectorAdapter implements StatusNotificationHandler, Meter
   public StartTransactionConfirmation handleStartTransaction(StartTransactionRequest request) {
     listener.onRequest(request);
 
+    // OCPP requires the CSMS to verify the idTag presented here too — a charger using local
+    // pre-authorization (or FreeMode) starts the transaction without a preceding Authorize.req,
+    // making this the only authorization checkpoint. Checked before routing so a refused start
+    // produces no connector side effects (no transaction id adopted, no charging state flipped).
+    // The response still carries a real unique transaction id: the id is schema-required, and the
+    // charger references it in its follow-up StopTransaction when StopTransactionOnInvalidId ends
+    // the session.
+    if (!tagValidator.test(request.getIdTag())) {
+      return new StartTransactionConfirmation(new IdTagInfo(AuthorizationStatus.Invalid),
+          transactionSequence.getAndIncrement());
+    }
+
+    if (!handlers.containsKey(request.getConnectorId())) {
+      // Connector with no Thing — OCPP still requires a StartTransaction.conf (a CallError here
+      // strands the charger's locally-running transaction, the exact wedge the StopTransaction
+      // tolerance fixes on the other end). Accept with a real unique id; left out of
+      // transactionMap on purpose — its StopTransaction falls through to the generic ACK below.
+      return new StartTransactionConfirmation(new IdTagInfo(AuthorizationStatus.Accepted),
+          transactionSequence.getAndIncrement());
+    }
+
     StartTransactionConfirmation confirmation = handle(handler -> handler.handleStartTransaction(request), request.getConnectorId());
     if (confirmation != null) {
       transactionMap.put(request.getConnectorId(), confirmation.getTransactionId());
@@ -96,7 +129,13 @@ public class ChargerConnectorAdapter implements StatusNotificationHandler, Meter
     }
 
     if (connectorId != null) {
-      return handle(handler -> handler.handleStopTransaction(request), connectorId);
+      StopTransactionConfirmation confirmation =
+          handle(handler -> handler.handleStopTransaction(request), connectorId);
+      if (confirmation != null) {
+        return confirmation;
+      }
+      // Tracked connector whose Thing handler is gone (disposed between start and stop) — fall
+      // through to the generic ACK rather than letting the library answer NotSupported.
     }
     // Unknown transaction — no StartTransaction was tracked for this id. Common with free-charging
     // (FreeMode): the charger runs a local transaction and sends StopTransaction at session end without

@@ -433,8 +433,10 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
             State state = parse(measurement, uid, sample);
             getCallback().stateUpdated(uid, state);
           }
-        } catch (NumberFormatException e) {
-          logger.debug("Could not parse value of measurement {}", sample, e);
+        } catch (RuntimeException e) {
+          // One bad sample must never escalate to a CallError for the whole MeterValues request —
+          // OCPP expects the CSMS to acknowledge it regardless of how presentable the data is.
+          logger.debug("Could not process measurement {}", sample, e);
         }
       }
     }
@@ -726,21 +728,53 @@ public class ConnectorThingHandler extends GenericThingHandlerBase<ServerBridgeH
     return new StopTransactionConfirmation();
   }
 
-  private static State parse(Double measurement, ChannelUID uid, SampledValue sample) {
+  /**
+   * Every UnitOfMeasure value the OCPP 1.6 schema allows on a SampledValue, mapped straight to a
+   * unit. The official enum contains several spellings JSR-385 parsers reject — {@code Celcius}
+   * (the original misspelling is a legal wire value alongside {@code Celsius}), {@code Percent},
+   * {@code Hertz}, and the reactive/apparent family ({@code var}, {@code kvar}, {@code varh},
+   * {@code kvarh}, {@code VA}, {@code kVA}) — so relying on parsing alone turns a legal unit into
+   * a failed request.
+   */
+  private static final java.util.Map<String, javax.measure.Unit<?>> OCPP_UNITS = java.util.Map.ofEntries(
+      java.util.Map.entry("Wh", Units.WATT_HOUR),
+      java.util.Map.entry("kWh", Units.KILOWATT_HOUR),
+      java.util.Map.entry("varh", Units.VAR_HOUR),
+      java.util.Map.entry("kvarh", Units.KILOVAR_HOUR),
+      java.util.Map.entry("W", Units.WATT),
+      java.util.Map.entry("kW", Units.WATT.multiply(1000)),
+      java.util.Map.entry("VA", Units.VOLT_AMPERE),
+      java.util.Map.entry("kVA", Units.KILOVOLT_AMPERE),
+      java.util.Map.entry("var", Units.VAR),
+      java.util.Map.entry("kvar", Units.KILOVAR),
+      java.util.Map.entry("A", Units.AMPERE),
+      java.util.Map.entry("V", Units.VOLT),
+      java.util.Map.entry("K", Units.KELVIN),
+      java.util.Map.entry("Celcius", org.openhab.core.library.unit.SIUnits.CELSIUS),
+      java.util.Map.entry("Celsius", org.openhab.core.library.unit.SIUnits.CELSIUS),
+      java.util.Map.entry("Fahrenheit", org.openhab.core.library.unit.ImperialUnits.FAHRENHEIT),
+      java.util.Map.entry("Percent", Units.PERCENT),
+      java.util.Map.entry("Hertz", Units.HERTZ)
+  );
+
+  static State parse(Double measurement, ChannelUID uid, SampledValue sample) {
     String unit = sample.getUnit();
-    if (unit != null) {
-      // Normalize unit names that don't match JSR-385 format
-      switch (unit) {
-        case "Celsius": unit = "°C"; break;
-        case "Fahrenheit": unit = "°F"; break;
-        default: break;
-      }
+    if (unit == null || unit.isEmpty()) {
+      // default assumed from specs, when unit is not specified it fall backs to "Wh"
+      return new QuantityType<>(measurement, Units.WATT_HOUR);
+    }
+    javax.measure.Unit<?> mapped = OCPP_UNITS.get(unit);
+    if (mapped != null) {
+      return new QuantityType<>(measurement, mapped);
+    }
+    try {
+      // Vendor extension beyond the official enum — best-effort parse.
       Quantity<?> quantity = Quantities.getQuantity("1 " + unit);
       return new QuantityType<>(measurement, quantity.getUnit());
+    } catch (RuntimeException e) {
+      // A unit we can't express must never fail the request — deliver the bare number instead.
+      return new DecimalType(measurement);
     }
-
-    // default assumed from specs, when unit is not specified it fall backs to "Wh"
-    return new QuantityType<>(measurement, Units.WATT_HOUR);
   }
 
   private int generateId() {

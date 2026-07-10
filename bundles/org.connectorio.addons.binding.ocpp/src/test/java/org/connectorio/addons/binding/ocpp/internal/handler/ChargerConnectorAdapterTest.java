@@ -89,9 +89,88 @@ class ChargerConnectorAdapterTest {
     verify(connector1, never()).handleStopTransaction(any(StopTransactionRequest.class));
   }
 
+  @Test
+  void startTransactionOnAConnectorWithNoThingIsStillConfirmed() {
+    // OCPP requires a StartTransaction.conf even for a connector the CSMS does not model — an
+    // unanswered request becomes a CallError that strands the charger's locally-running
+    // transaction. StatusNotification/MeterValues already had this guard; StartTransaction didn't.
+    adapter.addConnector(1, connector1);
+
+    StartTransactionRequest start = startOn(7);
+    StartTransactionConfirmation conf = adapter.handleStartTransaction(start);
+
+    assertThat(conf).isNotNull();
+    assertThat(conf.getIdTagInfo().getStatus()).isEqualTo(AuthorizationStatus.Accepted);
+    assertThat(conf.getTransactionId()).isPositive();
+    verify(connector1, never()).handleStartTransaction(any(StartTransactionRequest.class));
+
+    // ...and the matching StopTransaction falls through to the generic ACK, not NotSupported.
+    assertThat(adapter.handleStopTransaction(mockStop(conf.getTransactionId()))).isNotNull();
+  }
+
+  @Test
+  void unmappedConnectorConfirmationsDrawDistinctIdsFromTheSharedSequence() {
+    adapter.addConnector(1, connector1);
+
+    int first = adapter.handleStartTransaction(startOn(7)).getTransactionId();
+    int second = adapter.handleStartTransaction(startOn(8)).getTransactionId();
+
+    // real ids from the charger-wide sequence, not a fixed placeholder — so they can never
+    // collide with a modeled connector's transaction
+    assertThat(second).isGreaterThan(first);
+  }
+
+  @Test
+  void aRejectedIdTagIsRefusedWithoutTouchingTheConnector() {
+    // A charger with local pre-authorization (or FreeMode) starts the transaction without a
+    // preceding Authorize.req — StartTransaction is the only checkpoint where the CSMS can apply
+    // its idTag whitelist. Refusal must produce NO connector side effects.
+    adapter.addConnector(1, connector1);
+    adapter.setTagValidator("friend"::equals);
+
+    StartTransactionRequest strangerStart = startOn(1);
+    when(strangerStart.getIdTag()).thenReturn("stranger");
+    StartTransactionConfirmation conf = adapter.handleStartTransaction(strangerStart);
+
+    assertThat(conf).isNotNull();
+    assertThat(conf.getIdTagInfo().getStatus()).isEqualTo(AuthorizationStatus.Invalid);
+    assertThat(conf.getTransactionId()).isPositive(); // schema-required, charger stops with this id
+    verify(connector1, never()).handleStartTransaction(any(StartTransactionRequest.class));
+  }
+
+  @Test
+  void anAuthorizedIdTagIsRoutedNormally() {
+    adapter.addConnector(1, connector1);
+    adapter.setTagValidator("friend"::equals);
+
+    StartTransactionRequest start = startOn(1);
+    when(start.getIdTag()).thenReturn("friend");
+    when(connector1.handleStartTransaction(start)).thenReturn(confirmation(5));
+
+    StartTransactionConfirmation conf = adapter.handleStartTransaction(start);
+
+    assertThat(conf.getIdTagInfo().getStatus()).isEqualTo(AuthorizationStatus.Accepted);
+    verify(connector1).handleStartTransaction(start);
+  }
+
+  @Test
+  void stopForATrackedConnectorWhoseHandlerIsGoneStillGetsAcked() {
+    adapter.addConnector(1, connector1);
+    StartTransactionRequest start = startOn(1);
+    when(connector1.handleStartTransaction(start)).thenReturn(confirmation(9));
+    adapter.handleStartTransaction(start);
+
+    // the connector Thing is disposed between start and stop
+    adapter.removeConnector(1);
+
+    assertThat(adapter.handleStopTransaction(mockStop(9))).isNotNull();
+  }
+
+  // lenient: some guard paths legitimately never read these stubs (a rejected idTag never reaches
+  // getConnectorId; a stop against an empty transaction map never reads getTransactionId)
   private StartTransactionRequest startOn(int connectorId) {
     StartTransactionRequest request = org.mockito.Mockito.mock(StartTransactionRequest.class);
-    when(request.getConnectorId()).thenReturn(connectorId);
+    org.mockito.Mockito.lenient().when(request.getConnectorId()).thenReturn(connectorId);
     return request;
   }
 
@@ -101,7 +180,7 @@ class ChargerConnectorAdapterTest {
 
   private StopTransactionRequest mockStop(int transactionId) {
     StopTransactionRequest request = org.mockito.Mockito.mock(StopTransactionRequest.class);
-    when(request.getTransactionId()).thenReturn(transactionId);
+    org.mockito.Mockito.lenient().when(request.getTransactionId()).thenReturn(transactionId);
     return request;
   }
 }

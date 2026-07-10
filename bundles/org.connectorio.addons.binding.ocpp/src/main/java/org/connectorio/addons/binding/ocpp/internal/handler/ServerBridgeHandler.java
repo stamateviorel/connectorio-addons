@@ -41,6 +41,7 @@ import org.connectorio.addons.binding.ocpp.internal.server.CompositeRequestListe
 import org.connectorio.addons.binding.ocpp.internal.server.OcppServer;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.AuthorizationIdTagAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.BootRegistrationAdapter;
+import org.connectorio.addons.binding.ocpp.internal.server.adapter.DataTransferAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.MeterValuesConfigAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.RemoteAuthorizationConfigAdapter;
 import org.connectorio.addons.binding.ocpp.internal.server.adapter.RequestListenerAdapter;
@@ -68,6 +69,12 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
   private VendorConfigAdapter vendorConfigAdapter;
   private MeterValuesConfigAdapter meterValuesConfigAdapter;
   private RemoteAuthorizationConfigAdapter remoteAuthorizationConfigAdapter;
+  /**
+   * idTags permitted to charge, from the bridge's {@code tags} parameter. Empty = accept all.
+   * Volatile: read via {@link #isTagAuthorized} from charger handlers on OCPP threads while a
+   * bridge config edit re-initializes this handler.
+   */
+  private volatile Set<String> authorizedTags = Collections.emptySet();
 
   public ServerBridgeHandler(Bridge bridge, NetworkAddressService networkAddressService) {
     super(bridge);
@@ -94,6 +101,7 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
 
     Set<String> chargers = set(config.chargers);
     Set<String> tags = set(config.tags);
+    authorizedTags = tags;
     Set<String> meterlessChargers = set(config.meterlessChargers);
     int defaultHeartbeatSeconds = config.heartbeat > 0 ? config.heartbeat : 60;
 
@@ -106,6 +114,9 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
     eventHandlers.addFirst(bootAdapter);
     eventHandlers.add(bridgeHandler);
     eventHandlers.add(new RequestListenerAdapter(listener));
+    // LAST on purpose: catch-all UnknownVendorId for DataTransfer — any vendor-specific handler
+    // registered earlier in the chain pre-empts it (first valid confirmation wins).
+    eventHandlers.add(new DataTransferAdapter());
 
     server = new OcppServer(
       address, config.port, bootAdapter, eventHandlers,
@@ -165,6 +176,17 @@ public class ServerBridgeHandler extends GenericBridgeHandlerBase<ServerConfig> 
       )
       .filter(value -> !value.isEmpty())
       .orElse(Collections.emptySet());
+  }
+
+  /**
+   * Whether this idTag may charge. Mirrors {@link AuthorizationIdTagAdapter}'s Authorize.req
+   * policy (empty {@code tags} = accept everything) so StartTransaction.req — which a charger
+   * using local pre-authorization or FreeMode may send without a preceding Authorize.req —
+   * enforces the same whitelist instead of rubber-stamping every tag.
+   */
+  public boolean isTagAuthorized(String idTag) {
+    Set<String> tags = authorizedTags;
+    return tags.isEmpty() || tags.contains(idTag);
   }
 
   @Override

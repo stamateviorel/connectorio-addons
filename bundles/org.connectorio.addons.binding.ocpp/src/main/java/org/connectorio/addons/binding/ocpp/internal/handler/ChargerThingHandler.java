@@ -71,6 +71,14 @@ public class ChargerThingHandler extends GenericBridgeHandlerBase<ChargerConfig>
 
   @Override
   public void initialize() {
+    // StartTransaction idTag policy comes from the server bridge's `tags` whitelist. Wired as a
+    // method reference so a bridge config edit (which re-reads `tags` in its own initialize())
+    // is picked up without touching this handler.
+    Bridge bridge = getBridge();
+    if (bridge != null && bridge.getHandler() instanceof ServerBridgeHandler) {
+      ServerBridgeHandler serverHandler = (ServerBridgeHandler) bridge.getHandler();
+      adapter.setTagValidator(serverHandler::isTagAuthorized);
+    }
     updateStatus(ThingStatus.ONLINE);
   }
 

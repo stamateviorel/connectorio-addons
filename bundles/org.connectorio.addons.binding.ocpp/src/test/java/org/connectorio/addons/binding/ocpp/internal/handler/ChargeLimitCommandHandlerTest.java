@@ -112,6 +112,8 @@ class ChargeLimitCommandHandlerTest {
     ChargingProfile profile = ((SetChargingProfileRequest) requestCaptor.getValue()).getCsChargingProfiles();
     assertThat(profile.getChargingProfilePurpose()).isEqualTo(ChargingProfilePurposeType.TxProfile);
     assertThat(profile.getTransactionId()).isEqualTo(42);
+    // Distinct replace-key per purpose — flipping purpose under one id is undefined in the spec.
+    assertThat(profile.getChargingProfileId()).isEqualTo(2);
   }
 
   @Test
@@ -135,6 +137,8 @@ class ChargeLimitCommandHandlerTest {
     ChargingProfile profile = ((SetChargingProfileRequest) requestCaptor.getValue()).getCsChargingProfiles();
     assertThat(profile.getChargingProfilePurpose()).isEqualTo(ChargingProfilePurposeType.TxDefaultProfile);
     assertThat(profile.getTransactionId()).isNull();
+    // Keeps the historical id 1 so chargers holding a persisted default profile keep replacing it.
+    assertThat(profile.getChargingProfileId()).isEqualTo(1);
   }
 
   @Test
